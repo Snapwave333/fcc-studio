@@ -173,6 +173,16 @@ pub fn open_in_explorer(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn pick_folder(title: Option<String>) -> Result<Option<String>, String> {
+    let mut dialog = rfd::AsyncFileDialog::new();
+    if let Some(ref t) = title {
+        dialog = dialog.set_title(t);
+    }
+    let res = dialog.pick_folder().await;
+    Ok(res.map(|h| h.path().to_string_lossy().to_string()))
+}
+
+#[tauri::command]
 pub fn start_fs_watch(app: tauri::AppHandle, root: String) -> Result<(), String> {
     use notify::{RecursiveMode, Watcher};
     std::thread::spawn(move || {

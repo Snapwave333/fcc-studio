@@ -16,7 +16,6 @@ import {
 } from "lucide-react";
 import { api, FsEntry } from "../../lib/api";
 import { useApp } from "../../store/useApp";
-import { open } from "@tauri-apps/api/dialog";
 
 function TreeNode({ entry, depth }: { entry: FsEntry; depth: number }) {
   const [expanded, setExpanded] = useState(false);
@@ -126,15 +125,43 @@ export default function LeftPanel({ width, onToggle }: { width: number; onToggle
   const [hits, setHits] = useState<{ path: string; line: number; text: string }[] | null>(null);
   const [rootEntries, setRootEntries] = useState<FsEntry[]>([]);
 
+  const startNewProject = async () => {
+    try {
+      const selected = await api.pickFolder("Select project folder");
+      if (!selected) return;
+      const root = selected;
+      const existing = projects.find(
+        (p) => p.root.trim().toLowerCase() === root.trim().toLowerCase()
+      );
+      if (existing) {
+        await setActiveProject(existing.id);
+        showToast(`Opened ${existing.name}`);
+        setCreating(false);
+        return;
+      }
+      const name =
+        root.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).pop() ||
+        "New Project";
+      const p = await api.createProject(name, root, "");
+      await loadProjects();
+      await setActiveProject(p.id);
+      setCreating(false);
+      showToast(`Created project: ${name}`);
+    } catch (e) {
+      showToast(String(e));
+    }
+  };
+
   const browseFolder = async () => {
     try {
-      const selected = await open({
-        directory: true,
-        multiple: false,
-        title: "Select project folder",
-      });
+      const selected = await api.pickFolder("Select project folder");
       if (selected) {
-        setNewRoot(selected as string);
+        setNewRoot(selected);
+        if (!newName.trim()) {
+          const name =
+            selected.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).pop() || "";
+          setNewName(name);
+        }
       }
     } catch (e) {
       showToast(String(e));
@@ -209,7 +236,7 @@ export default function LeftPanel({ width, onToggle }: { width: number; onToggle
             </option>
           ))}
         </select>
-        <button className="btn btn-ghost px-1.5" title="New project" onClick={() => setCreating((v) => !v)}>
+        <button className="btn btn-ghost px-1.5" title="Open folder / New project" onClick={startNewProject}>
           +
         </button>
         <button className="btn btn-ghost px-1.5" title="Hide panel" onClick={onToggle}>
@@ -299,8 +326,12 @@ export default function LeftPanel({ width, onToggle }: { width: number; onToggle
       )}
 
       {!activeProject && (
-        <div className="px-3 py-6 text-center text-[12px] text-muted">
-          Create or select a project to begin.
+        <div className="flex flex-col items-center justify-center px-4 py-8 text-center text-muted">
+          <FolderOpen size={36} className="mb-2 text-muted/60" />
+          <p className="mb-3 text-[12.5px] font-medium text-text2">No project open</p>
+          <button className="btn btn-primary text-xs" onClick={startNewProject}>
+            <FolderOpenIcon size={14} className="mr-1.5 inline" /> Open Folder
+          </button>
         </div>
       )}
     </div>

@@ -33,10 +33,13 @@ export default function TitleBar() {
       className="relative flex h-9 shrink-0 items-center justify-between border-b border-[#22222c] bg-panel pl-3 select-none"
     >
       <div data-tauri-drag-region className="flex items-center gap-2">
-        <span className="grid h-5 w-5 place-items-center rounded-full bg-fuchsia text-[11px] font-bold text-white">
-          F
-        </span>
-        <span className="text-[12.5px] font-semibold tracking-wide">FCC Studio</span>
+        <img
+          src="/serenity-logo-transparent.png"
+          alt="Serenity"
+          className="h-5 w-5 object-contain"
+          data-tauri-drag-region
+        />
+        <span className="text-[12.5px] font-semibold tracking-wide">Serenity</span>
         <span className="chip">free-claude-code</span>
 
         <button

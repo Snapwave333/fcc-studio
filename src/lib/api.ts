@@ -143,6 +143,7 @@ export const api = {
   searchProject: (root: string, query: string) =>
     invoke<{ path: string; line: number; text: string }[]>("search_project", { root, query, maxResults: 300 }),
   openInExplorer: (path: string) => invoke<void>("open_in_explorer", { path }),
+  pickFolder: (title?: string) => invoke<string | null>("pick_folder", { title: title ?? null }),
   startFsWatch: (root: string) => invoke<void>("start_fs_watch", { root }),
 
   detectEnvironment: () => invoke<EnvInfo>("detect_environment"),

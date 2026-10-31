@@ -1,7 +1,7 @@
 [package]
 name = "fcc-studio"
 version = "0.1.0"
-description = "Vibe-coding desktop workspace for Free Claude Code"
+description = "Serenity — Autonomous Vibe-Coding Studio for Free Claude Code"
 edition = "2021"
 
 [lib]
@@ -25,6 +25,7 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 notify = "7"
 ureq = { version = "2", features = ["json"] }
+rfd = "0.15"
 
 [profile.release]
 lto = false

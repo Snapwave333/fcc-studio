@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "FCC Studio",
+  "productName": "Serenity",
   "version": "0.1.0",
-  "identifier": "com.fccstudio.app",
+  "identifier": "com.serenity.studio",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "FCC Studio",
+        "title": "Serenity",
         "width": 1480,
         "height": 920,
         "minWidth": 980,
