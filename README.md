@@ -72,4 +72,6 @@ Serenity follows the **Electric Fuchsia** design system. Read the complete visua
 
 <div align="center">
   <img src="assets/serenity-wordmark-dark.svg" alt="Serenity Wordmark" width="540">
+  <br/><br/>
+  <p>Crafted with 💖 by <b>snapwave//Lushapps</b></p>
 </div>
