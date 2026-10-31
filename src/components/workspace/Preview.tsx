@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Camera,
   ExternalLink,
   Monitor,
   MousePointerClick,
   RefreshCw,
   Smartphone,
   Tablet,
+  Play,
 } from "lucide-react";
 import { api, listenEvent, SelectedElement } from "../../lib/api";
 import { useApp } from "../../store/useApp";
@@ -30,12 +30,14 @@ export default function Preview() {
   const [device, setDevice] = useState<Device>("full");
   const [key, setKey] = useState(0);
   const [internalPort, setInternalPort] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
   const lastSelectTs = useRef(0);
+  const autoStarted = useRef(false);
 
   useEffect(() => {
-    if (project) {
-      setUrl(project.preview_url);
-      setInput(project.preview_url);
+    if (project && !autoStarted.current) {
+      autoStarted.current = true;
+      startInternal();
     }
   }, [project?.id]);
 
@@ -53,14 +55,15 @@ export default function Preview() {
   }, [setPendingElement, showToast]);
 
   const startInternal = useCallback(async () => {
-    if (!project) return;
+    if (!project || loading) return;
+    setLoading(true);
     try {
       const port = await api.previewStart(project.root);
       setInternalPort(port);
-      setUrl(`http://127.0.0.1:${port}/`);
-      setInput(`http://127.0.0.1:${port}/`);
     } catch (e) {
       showToast(String(e));
+    } finally {
+      setLoading(false);
     }
   }, [project, showToast]);
 
@@ -68,23 +71,18 @@ export default function Preview() {
     const open = await api.devServerScan().catch(() => []);
     if (open.length > 0) {
       setUrl(`http://127.0.0.1:${open[0].port}/`);
-      setInput(`http://127.0.0.1:${open[0].port}/`);
       showToast(`Found dev server on port ${open[0].port}`);
     } else {
       showToast("No local dev server detected — start one in the Terminal tab");
     }
   };
 
-  const src = url
-    ? url + (selectMode ? (url.includes("?") ? "&" : "?") + "__select=1" : "")
-    : "";
-
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-1 border-b border-[#22222c] px-2 py-1.5">
         <input
           className="input min-w-0 flex-1"
-          placeholder="http://localhost:5173 or use preview / detect buttons"
+          placeholder="http://localhost:5173 or use Detect / Preview buttons"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
@@ -97,10 +95,10 @@ export default function Preview() {
         <button className="btn btn-ghost px-1.5" title="Refresh" onClick={() => setKey((k) => k + 1)}>
           <RefreshCw size={14} />
         </button>
-        <button className="btn btn-ghost px-1.5" title="Preview project folder" onClick={startInternal}>
-          Preview
+        <button className={`btn btn-ghost px-1.5 ${loading ? "opacity-50" : ""}`} title="Start internal preview server for project folder" onClick={startInternal} disabled={loading}>
+          {loading ? <RefreshCw size={14} className="animate-spin" /> : <Play size={14} />} <span>Preview</span>
         </button>
-        <button className="btn btn-ghost px-1.5" title="Detect dev server" onClick={detect}>
+        <button className="btn btn-ghost px-1.5" title="Detect running dev server" onClick={detect}>
           Detect
         </button>
         <button
@@ -136,11 +134,21 @@ export default function Preview() {
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto bg-[#0c0c10] p-2">
-        {src ? (
+        {internalPort ? (
+          <div className="mx-auto h-full transition-all" style={{ width: DEVICE_WIDTH[device], maxWidth: "100%" }}>
+            <iframe
+              key={key + internalPort}
+              src={`http://127.0.0.1:${internalPort}/?__select=1`}
+              className="h-full min-h-full w-full rounded-lg border border-[#22222c] bg-white"
+              sandbox="allow-scripts allow-forms allow-same-origin allow-popups"
+              title="Live preview"
+            />
+          </div>
+        ) : url ? (
           <div className="mx-auto h-full transition-all" style={{ width: DEVICE_WIDTH[device], maxWidth: "100%" }}>
             <iframe
               key={key + url}
-              src={src}
+              src={url + (selectMode ? (url.includes("?") ? "&" : "?") + "__select=1" : "")}
               className="h-full min-h-full w-full rounded-lg border border-[#22222c] bg-white"
               sandbox="allow-scripts allow-forms allow-same-origin allow-popups"
               title="Live preview"

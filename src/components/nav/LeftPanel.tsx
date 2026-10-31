@@ -12,9 +12,11 @@ import {
   Pencil,
   FolderOpen,
   PanelLeftClose,
+  FolderOpen as FolderOpenIcon,
 } from "lucide-react";
 import { api, FsEntry } from "../../lib/api";
 import { useApp } from "../../store/useApp";
+import { open } from "@tauri-apps/api/dialog";
 
 function TreeNode({ entry, depth }: { entry: FsEntry; depth: number }) {
   const [expanded, setExpanded] = useState(false);
@@ -124,6 +126,21 @@ export default function LeftPanel({ width, onToggle }: { width: number; onToggle
   const [hits, setHits] = useState<{ path: string; line: number; text: string }[] | null>(null);
   const [rootEntries, setRootEntries] = useState<FsEntry[]>([]);
 
+  const browseFolder = async () => {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Select project folder",
+      });
+      if (selected) {
+        setNewRoot(selected as string);
+      }
+    } catch (e) {
+      showToast(String(e));
+    }
+  };
+
   useEffect(() => {
     if (activeProject) {
       api
@@ -203,12 +220,17 @@ export default function LeftPanel({ width, onToggle }: { width: number; onToggle
       {creating && (
         <div className="mx-2 mb-2 space-y-2 rounded-lg bg-elev p-2">
           <input className="input w-full" placeholder="Project name" value={newName} onChange={(e) => setNewName(e.target.value)} />
-          <input
-            className="input w-full"
-            placeholder="Folder path (e.g. C:\dev\my-app)"
-            value={newRoot}
-            onChange={(e) => setNewRoot(e.target.value)}
-          />
+          <div className="flex gap-1">
+            <input
+              className="input flex-1 min-w-0"
+              placeholder="Folder path (e.g. C:\dev\my-app)"
+              value={newRoot}
+              onChange={(e) => setNewRoot(e.target.value)}
+            />
+            <button className="btn btn-ghost px-2" title="Browse for folder" onClick={browseFolder}>
+              <FolderOpenIcon size={14} />
+            </button>
+          </div>
           <button className="btn btn-primary w-full justify-center" onClick={createProject}>
             Create project
           </button>
