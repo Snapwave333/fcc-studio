@@ -1,0 +1,46 @@
+# Build artifacts
+/target
+**/target
+/dist
+/node_modules
+*.log
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local
+
+# Tauri
+src-tauri/target
+src-tauri/**/target
+
+# Temp
+*.tmp
+*.temp
+
+# Build
+**/build
+**/out
+
+# Cache
+.cache
+*.cache
+
+# Generated
+*.generated.rs
+*.d
+
+# Binary
+*.exe
+*.dll
+*.so
+*.dylib
