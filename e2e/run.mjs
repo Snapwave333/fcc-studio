@@ -212,6 +212,22 @@ async function main() {
     if (traversal !== 404) throw new Error(`path traversal returned ${traversal}`);
   });
 
+  await step("preview click-to-select hands the element to the agent", async () => {
+    await click("//button[contains(@title,'Click-to-select')]");
+    const frame = await find("//iframe[@title='Live preview']");
+    await wd("POST", s("/frame"), { id: { [ELEMENT]: frame } });
+    try {
+      await waitFor("overlay armed", async () => exec("return document.documentElement.style.cursor === 'crosshair';"));
+      const hero = await find("//h1[@id='hero']");
+      await wd("POST", s(`/element/${hero}/click`), {});
+    } finally {
+      await wd("POST", s("/frame/parent"), {});
+    }
+    await waitFor("element chip", async () => (await bodyText()).includes("<h1> Hello Serenity — included with next message"));
+    await click("//button[contains(@title,'Click-to-select')]");
+    await click("//button[@title='Remove']");
+  });
+
   await step("opening a file switches to the editor with its contents", async () => {
     await click("//span[normalize-space(.)='src']");
     await click("//span[normalize-space(.)='app.ts']");
