@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { baseName, joinPath, relPath, relativeTime } from "../lib/format";
+import { baseName, dropMentions, formatElapsed, joinPath, relPath, relativeTime } from "../lib/format";
 
 describe("paths", () => {
   it("computes relative paths on both separators", () => {
@@ -27,5 +27,23 @@ describe("relativeTime", () => {
     expect(relativeTime("2026-01-01T07:00:00Z", now)).toBe("5h ago");
     expect(relativeTime("2025-12-29T12:00:00Z", now)).toBe("3d ago");
     expect(relativeTime("garbage", now)).toBe("");
+  });
+});
+
+describe("dropped files", () => {
+  it("mentions project files relatively and quotes paths with spaces", () => {
+    expect(dropMentions("/w/app", ["/w/app/src/a.ts", "/w/app/my notes.md"])).toBe('@src/a.ts @"my notes.md"');
+    expect(dropMentions("C:\\w\\app", ["C:\\w\\app\\src\\a.ts"])).toBe("@src/a.ts");
+  });
+
+  it("keeps outside files as absolute paths", () => {
+    expect(dropMentions("/w/app", ["/tmp/log.txt"])).toBe("/tmp/log.txt");
+  });
+});
+
+describe("elapsed time", () => {
+  it("formats seconds and minutes", () => {
+    expect(formatElapsed(4200)).toBe("4s");
+    expect(formatElapsed(65000)).toBe("1m 05s");
   });
 });

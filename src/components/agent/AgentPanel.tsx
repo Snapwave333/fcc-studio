@@ -19,7 +19,8 @@ import {
 } from "lucide-react";
 import { useApp, ChatMessage, ToolActivity } from "../../store/useApp";
 import { Markdown } from "../../lib/markdown";
-import { relativeTime } from "../../lib/format";
+import { dropMentions, formatElapsed, relativeTime } from "../../lib/format";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { rankFiles } from "../common/QuickOpen";
 import { api } from "../../lib/api";
 import { promptDialog } from "../../lib/dialog";
@@ -271,6 +272,46 @@ export default function AgentPanel({
   const [mention, setMention] = useState<{ start: number; query: string } | null>(null);
   const [mentionIdx, setMentionIdx] = useState(0);
   const [projectFiles, setProjectFiles] = useState<string[] | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const runStart = useRef(0);
+
+  useEffect(() => {
+    if (!running) return;
+    runStart.current = Date.now();
+    setElapsed(0);
+    const t = setInterval(() => setElapsed(Date.now() - runStart.current), 1000);
+    return () => clearInterval(t);
+  }, [running]);
+
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    let alive = true;
+    getCurrentWebview()
+      .onDragDropEvent((e) => {
+        const p = e.payload;
+        if (p.type === "enter" || p.type === "over") setDragging(true);
+        else if (p.type === "leave") setDragging(false);
+        else if (p.type === "drop") {
+          setDragging(false);
+          const st = useApp.getState();
+          const proj = st.activeProject();
+          if (!proj || !p.paths.length) return;
+          const text = dropMentions(proj.root, p.paths);
+          setDraft((d) => (d && !/\s$/.test(d) ? `${d} ${text} ` : `${d}${text} `));
+          requestAnimationFrame(() => inputRef.current?.focus());
+        }
+      })
+      .then((u) => {
+        if (alive) off = u;
+        else u();
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+      off?.();
+    };
+  }, []);
   const mentionResults = mention && projectFiles ? rankFiles(mention.query, projectFiles, 8) : [];
 
   useEffect(() => {
@@ -430,7 +471,7 @@ export default function AgentPanel({
         {running && inspectorOpen && (liveTools.length > 0 || activityLog.length > 0) && (
           <div className="mb-2 max-h-40 space-y-1 overflow-y-auto rounded-xl border border-[#22222c] bg-panel p-2">
             <div className="flex items-center px-1 pb-0.5 text-[10.5px] font-semibold uppercase tracking-wider text-muted">
-              <span className="flex-1">live activity · {liveTools.length} tool calls</span>
+              <span className="flex-1">live activity · {liveTools.length} tool calls · {formatElapsed(elapsed)}</span>
               <button className="normal-case hover:text-text" onClick={() => setInspectorOpen(false)}>
                 hide
               </button>
@@ -482,7 +523,14 @@ export default function AgentPanel({
           </div>
         )}
 
-        <div className="relative rounded-2xl border border-[#2c2c38] bg-panel p-2 focus-within:border-fuchsia">
+        <div
+          className={`relative rounded-2xl border bg-panel p-2 focus-within:border-fuchsia ${dragging && project ? "border-fuchsia border-dashed" : "border-[#2c2c38]"}`}
+        >
+          {dragging && project && (
+            <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-2xl bg-select/70 text-[12.5px] font-medium text-text">
+              Drop files to mention them
+            </div>
+          )}
           {mention && (
             <div role="listbox" aria-label="File mentions" className="absolute bottom-full left-2 right-2 mb-1.5 max-h-64 overflow-y-auto rounded-xl border border-[#2c2c38] bg-elev p-1 shadow-2xl">
               {!projectFiles && <div className="px-2.5 py-1.5 text-[11.5px] text-muted">indexing files…</div>}
@@ -552,6 +600,11 @@ export default function AgentPanel({
             <ModelPicker />
             <span className="truncate text-[10.5px] text-muted">Enter to send · Shift+Enter newline · @ file · ↑ recall</span>
             <span className="min-w-0 flex-1" />
+            {running && (
+              <span className="font-mono text-[10.5px] text-fuchsia2" aria-label="Elapsed time">
+                {formatElapsed(elapsed)}
+              </span>
+            )}
             {running ? (
               <button className="btn btn-danger" onClick={stopRun} title="Stop the agent (Esc)">
                 <CircleStop size={14} /> Stop

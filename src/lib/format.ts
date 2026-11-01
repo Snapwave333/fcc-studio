@@ -29,3 +29,22 @@ export function joinPath(dir: string, name: string): string {
 export function baseName(p: string): string {
   return p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? p;
 }
+
+export function dropMentions(root: string | null, paths: string[]): string {
+  return paths
+    .map((p) => {
+      const rel = root ? relPath(root, p) : p;
+      const inside = !!root && rel !== p && rel !== "";
+      const shown = inside ? rel.replace(/\\/g, "/") : p;
+      const quoted = /\s/.test(shown) ? `"${shown}"` : shown;
+      return inside ? `@${quoted}` : quoted;
+    })
+    .join(" ");
+}
+
+export function formatElapsed(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  return `${m}m ${String(s % 60).padStart(2, "0")}s`;
+}

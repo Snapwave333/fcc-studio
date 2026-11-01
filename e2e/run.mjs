@@ -384,6 +384,15 @@ async function main() {
     if (stored !== "opus") throw new Error(`model not persisted: ${stored}`);
   });
 
+  await step("dropping files onto the window mentions them in the prompt", async () => {
+    await invoke("plugin:event|emit", {
+      event: "tauri://drag-drop",
+      payload: { paths: [join(project, "src", "app.ts"), join(project, "README.md")], position: { x: 400, y: 800 } },
+    });
+    await waitFor("dropped mentions", async () => exec("return document.querySelector('textarea').value.includes('@src/app.ts @README.md');"));
+    await exec("const t = document.querySelector('textarea'); const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; set.call(t, ''); t.dispatchEvent(new Event('input', { bubbles: true }));");
+  });
+
   await step("ui zoom shortcuts scale the webview and persist", async () => {
     const before = await exec("return window.innerWidth;");
     await exec("window.dispatchEvent(new KeyboardEvent('keydown', { key: '=', ctrlKey: true, bubbles: true }));");
