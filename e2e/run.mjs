@@ -313,6 +313,9 @@ async function main() {
     await type("//div[@role='dialog']//input", "notes.txt\uE007");
     await waitFor("file created", async () => existsSync(join(project, "notes.txt")));
     await waitFor("tree shows file", async () => (await bodyText()).includes("notes.txt"));
+    await waitFor("untracked badge", async () =>
+      exec("const row = [...document.querySelectorAll('span')].find(s => s.textContent === 'notes.txt'); return !!row && row.parentElement.innerText.includes('U');")
+    );
   });
 }
 

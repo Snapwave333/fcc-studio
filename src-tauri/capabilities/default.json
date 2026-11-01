@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "FCC Studio main window capabilities",
+  "description": "Serenity main window capabilities",
   "windows": [
     "main"
   ],
@@ -11,6 +11,8 @@
     "core:window:allow-unmaximize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
-    "core:window:allow-start-dragging"
+    "core:window:allow-start-dragging",
+    "core:window:allow-request-user-attention",
+    "core:window:allow-set-title"
   ]
 }

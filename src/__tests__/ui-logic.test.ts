@@ -68,3 +68,27 @@ describe("quick open ranking", () => {
     expect(rankFiles("", files, 2)).toHaveLength(2);
   });
 });
+
+import { buildGitMarks } from "../components/nav/LeftPanel";
+
+describe("git decorations", () => {
+  it("marks files by status and flags every ancestor folder", () => {
+    const marks = buildGitMarks("/work/app", [
+      { path: "src/deep/a.ts", x: " ", y: "M", untracked: false },
+      { path: "new.txt", x: "?", y: "?", untracked: true },
+      { path: "added.ts", x: "A", y: " ", untracked: false },
+      { path: "gone.ts", x: " ", y: "D", untracked: false },
+    ]);
+    expect(marks.files.get("/work/app/src/deep/a.ts")).toBe("M");
+    expect(marks.files.get("/work/app/new.txt")).toBe("U");
+    expect(marks.files.get("/work/app/added.ts")).toBe("A");
+    expect(marks.files.get("/work/app/gone.ts")).toBe("D");
+    expect(marks.dirs.has("/work/app/src")).toBe(true);
+    expect(marks.dirs.has("/work/app/src/deep")).toBe(true);
+  });
+
+  it("normalizes windows roots", () => {
+    const marks = buildGitMarks("C:\\Dev\\App", [{ path: "src/x.ts", x: "M", y: " ", untracked: false }]);
+    expect(marks.files.get("c:/dev/app/src/x.ts")).toBe("M");
+  });
+});

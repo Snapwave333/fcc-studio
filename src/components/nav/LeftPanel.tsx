@@ -24,12 +24,36 @@ import { baseName, joinPath, relPath } from "../../lib/format";
 interface TreeCtx {
   expanded: Set<string>;
   toggle: (path: string, open?: boolean) => void;
+  git: GitMarks;
 }
+
+export interface GitMarks {
+  files: Map<string, string>;
+  dirs: Set<string>;
+}
+
+const normKey = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+
+export function buildGitMarks(root: string, entries: { path: string; x: string; y: string; untracked: boolean }[]): GitMarks {
+  const files = new Map<string, string>();
+  const dirs = new Set<string>();
+  const base = normKey(root);
+  for (const e of entries) {
+    const code = e.untracked ? "U" : e.x === "A" ? "A" : e.x === "D" || e.y === "D" ? "D" : e.x === "R" ? "R" : "M";
+    const rel = e.path.replace(/\\/g, "/").replace(/\/+$/, "");
+    files.set(`${base}/${rel.toLowerCase()}`, code);
+    const segs = rel.split("/");
+    for (let i = 1; i < segs.length; i++) dirs.add(`${base}/${segs.slice(0, i).join("/").toLowerCase()}`);
+  }
+  return { files, dirs };
+}
+
+const GIT_COLOR: Record<string, string> = { M: "text-[#e3b341]", U: "text-ok", A: "text-ok", D: "text-err", R: "text-fuchsia2" };
 
 const HIDDEN = new Set([".git", ".DS_Store", "Thumbs.db"]);
 const visibleEntries = (entries: FsEntry[]) => entries.filter((e) => !HIDDEN.has(e.name));
 
-const TreeContext = createContext<TreeCtx>({ expanded: new Set(), toggle: () => {} });
+const TreeContext = createContext<TreeCtx>({ expanded: new Set(), toggle: () => {}, git: { files: new Map(), dirs: new Set() } });
 
 function validName(name: string): string | null {
   const n = name.trim();
@@ -62,7 +86,10 @@ async function createIn(dir: string, isDir: boolean): Promise<string | null> {
 }
 
 function TreeNode({ entry, depth }: { entry: FsEntry; depth: number }) {
-  const { expanded, toggle } = useContext(TreeContext);
+  const { expanded, toggle, git } = useContext(TreeContext);
+  const key = normKey(entry.path);
+  const gitCode = entry.is_dir ? undefined : git.files.get(key);
+  const dirChanged = entry.is_dir && git.dirs.has(key);
   const isOpen = entry.is_dir && expanded.has(entry.path);
   const [children, setChildren] = useState<FsEntry[] | null>(null);
   const openFile = useApp((s) => s.openFile);
@@ -136,7 +163,13 @@ function TreeNode({ entry, depth }: { entry: FsEntry; depth: number }) {
         ) : (
           <FileIcon size={13} className="shrink-0 text-muted" />
         )}
-        <span className={`min-w-0 flex-1 truncate text-[12.5px] ${isActive ? "text-text" : "text-text2"}`}>{entry.name}</span>
+        <span
+          className={`min-w-0 flex-1 truncate text-[12.5px] ${gitCode ? GIT_COLOR[gitCode] : dirChanged ? "text-[#e3b341]/90" : isActive ? "text-text" : "text-text2"} ${gitCode === "D" ? "line-through" : ""}`}
+        >
+          {entry.name}
+        </span>
+        {gitCode && <span className={`shrink-0 pr-1 font-mono text-[10px] group-hover:hidden ${GIT_COLOR[gitCode]}`}>{gitCode}</span>}
+        {dirChanged && <span className="shrink-0 pr-1.5 text-[8px] text-[#e3b341] group-hover:hidden">●</span>}
         <span className="ml-auto hidden shrink-0 gap-1.5 pr-1 group-hover:flex">
           {entry.is_dir && (
             <button
@@ -262,10 +295,12 @@ export default function LeftPanel({ width, onToggle }: { width: number; onToggle
   const [rootEntries, setRootEntries] = useState<FsEntry[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [menuOpen, setMenuOpen] = useState(false);
+  const [git, setGit] = useState<GitMarks>({ files: new Map(), dirs: new Set() });
   const searchSeq = useRef(0);
 
   const treeCtx = useMemo<TreeCtx>(
     () => ({
+      git,
       expanded,
       toggle: (path, open) =>
         setExpanded((prev) => {
@@ -276,8 +311,27 @@ export default function LeftPanel({ width, onToggle }: { width: number; onToggle
           return next;
         }),
     }),
-    [expanded]
+    [expanded, git]
   );
+
+  useEffect(() => {
+    const root = activeProject?.root;
+    if (!root) {
+      setGit({ files: new Map(), dirs: new Set() });
+      return;
+    }
+    let alive = true;
+    const t = setTimeout(() => {
+      api
+        .gitStatus(root)
+        .then((st) => alive && setGit(st.repo ? buildGitMarks(root, st.entries) : { files: new Map(), dirs: new Set() }))
+        .catch(() => {});
+    }, 250);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+    };
+  }, [activeProject?.root, fileTreeVersion]);
 
   useEffect(() => {
     setExpanded(new Set());

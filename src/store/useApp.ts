@@ -8,6 +8,7 @@ import {
   processAgentEvent,
 } from "../lib/agent-events";
 import { confirmDialog } from "../lib/dialog";
+import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 
 export type { ChatMessage, ToolActivity } from "../lib/agent-events";
 
@@ -140,6 +141,23 @@ function acceptsRun(s: AppState, runId: string): boolean {
   return s.runId === null || s.runId === runId;
 }
 
+function notifyIfBackground(msg: ChatMessage | undefined) {
+  if (typeof document === "undefined" || document.hasFocus()) return;
+  try {
+    const win = getCurrentWindow();
+    win.requestUserAttention(UserAttentionType.Informational).catch(() => {});
+    const base = "Serenity";
+    document.title = `${msg?.error ? "⚠" : "✓"} ${base}`;
+    const restore = () => {
+      document.title = base;
+      window.removeEventListener("focus", restore);
+    };
+    window.addEventListener("focus", restore);
+  } catch {
+    return;
+  }
+}
+
 function persistAssistant(get: () => AppState, msg: ChatMessage | undefined) {
   const projectId = get().activeProjectId;
   if (!projectId || !msg || msg.role !== "assistant") return;
@@ -173,6 +191,7 @@ async function bindEvents(set: (p: Partial<AppState> | ((s: AppState) => Partial
     set(patch);
     if (next.finished) {
       persistAssistant(get, next.messages[next.messages.length - 1]);
+      notifyIfBackground(next.messages[next.messages.length - 1]);
       get().bumpTree();
     }
   });
