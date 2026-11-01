@@ -384,6 +384,15 @@ async function main() {
     if (stored !== "opus") throw new Error(`model not persisted: ${stored}`);
   });
 
+  await step("ui zoom shortcuts scale the webview and persist", async () => {
+    const before = await exec("return window.innerWidth;");
+    await exec("window.dispatchEvent(new KeyboardEvent('keydown', { key: '=', ctrlKey: true, bubbles: true }));");
+    await waitFor("zoom applied", async () => (await exec("return window.innerWidth;")) < before - 20);
+    await waitFor("zoom persisted", async () => (await invoke("kv_get", { key: "ui.zoom" })) === "1.1");
+    await exec("window.dispatchEvent(new KeyboardEvent('keydown', { key: '0', ctrlKey: true, bubbles: true }));");
+    await waitFor("zoom reset", async () => Math.abs((await exec("return window.innerWidth;")) - before) <= 2);
+  });
+
   await step("in-app dialogs replace native prompts (new file)", async () => {
     await click("//button[@title='New file']");
     await type("//div[@role='dialog']//input", "notes.txt\uE007");

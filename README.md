@@ -105,6 +105,7 @@ Installers are written to `src-tauri/target/release/bundle/` (NSIS/MSI on Window
 | `Ctrl/⌘+Shift+N` | New conversation |
 | ``Ctrl/⌘+` `` | Open the terminal |
 | `Ctrl/⌘+S` | Save in the editor or skill editor |
+| `Ctrl/⌘+=` / `Ctrl/⌘+-` / `Ctrl/⌘+0` | Zoom in / out / reset (remembered) |
 
 ---
 

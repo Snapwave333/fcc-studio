@@ -4,6 +4,7 @@ import TitleBar from "./components/layout/TitleBar";
 import ThreePanel from "./components/layout/ThreePanel";
 import DialogHost from "./components/common/DialogHost";
 import QuickOpen from "./components/common/QuickOpen";
+import { restoreZoom, zoomIn, zoomOut, zoomReset } from "./lib/zoom";
 
 export default function App() {
   const loadProjects = useApp((s) => s.loadProjects);
@@ -12,6 +13,7 @@ export default function App() {
 
   useEffect(() => {
     loadProjects().catch((e) => useApp.getState().showToast(`Could not load projects: ${String(e)}`));
+    restoreZoom();
   }, [loadProjects]);
 
   useEffect(() => {
@@ -26,6 +28,15 @@ export default function App() {
       } else if (mod && !e.shiftKey && (e.key === "p" || e.key === "P")) {
         e.preventDefault();
         if (st.activeProjectId) setQuickOpen((v) => !v);
+      } else if (mod && !e.altKey && (e.key === "=" || e.key === "+")) {
+        e.preventDefault();
+        zoomIn().then((z) => st.showToast(`Zoom ${Math.round(z * 100)}%`)).catch(() => {});
+      } else if (mod && !e.altKey && e.key === "-") {
+        e.preventDefault();
+        zoomOut().then((z) => st.showToast(`Zoom ${Math.round(z * 100)}%`)).catch(() => {});
+      } else if (mod && !e.altKey && e.key === "0") {
+        e.preventDefault();
+        zoomReset().then(() => st.showToast("Zoom 100%")).catch(() => {});
       } else if (mod && e.key === "`") {
         e.preventDefault();
         st.setRightTab("terminal");

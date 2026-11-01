@@ -106,3 +106,21 @@ describe("@file mentions", () => {
     expect(mentionAt("see @a.ts now", 13)).toBeNull();
   });
 });
+
+import { clampZoom, nextZoom } from "../lib/zoom";
+
+describe("ui zoom steps", () => {
+  it("walks the preset ladder and stops at the ends", () => {
+    expect(nextZoom(1, 1)).toBe(1.1);
+    expect(nextZoom(1, -1)).toBe(0.9);
+    expect(nextZoom(2, 1)).toBe(2);
+    expect(nextZoom(0.67, -1)).toBe(0.67);
+    expect(nextZoom(1.05, 1)).toBe(1.1);
+  });
+
+  it("clamps restored values", () => {
+    expect(clampZoom(9)).toBe(2);
+    expect(clampZoom(0.1)).toBe(0.67);
+    expect(clampZoom(NaN)).toBe(1);
+  });
+});
