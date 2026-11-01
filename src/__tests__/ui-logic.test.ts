@@ -92,3 +92,17 @@ describe("git decorations", () => {
     expect(marks.files.get("c:/dev/app/src/x.ts")).toBe("M");
   });
 });
+
+import { mentionAt } from "../components/agent/AgentPanel";
+
+describe("@file mentions", () => {
+  it("detects a mention token right before the caret", () => {
+    expect(mentionAt("fix @src/ap", 11)).toEqual({ start: 4, query: "src/ap" });
+    expect(mentionAt("@", 1)).toEqual({ start: 0, query: "" });
+  });
+
+  it("ignores emails and finished tokens", () => {
+    expect(mentionAt("mail me@host", 12)).toBeNull();
+    expect(mentionAt("see @a.ts now", 13)).toBeNull();
+  });
+});

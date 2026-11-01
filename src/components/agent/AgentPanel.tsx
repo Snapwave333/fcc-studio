@@ -18,6 +18,15 @@ import {
 import { useApp, ChatMessage, ToolActivity } from "../../store/useApp";
 import { Markdown } from "../../lib/markdown";
 import { relativeTime } from "../../lib/format";
+import { rankFiles } from "../common/QuickOpen";
+import { api } from "../../lib/api";
+
+export function mentionAt(text: string, caret: number): { start: number; query: string } | null {
+  const before = text.slice(0, caret);
+  const m = before.match(/(^|\s)@([^\s@]*)$/);
+  if (!m) return null;
+  return { start: caret - m[2].length - 1, query: m[2] };
+}
 
 export function toolSummary(tool: ToolActivity): string {
   const i = tool.input ?? {};
@@ -187,6 +196,42 @@ export default function AgentPanel({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const sentHistory = useRef<string[]>([]);
   const historyIdx = useRef(-1);
+  const [mention, setMention] = useState<{ start: number; query: string } | null>(null);
+  const [mentionIdx, setMentionIdx] = useState(0);
+  const [projectFiles, setProjectFiles] = useState<string[] | null>(null);
+  const mentionResults = mention && projectFiles ? rankFiles(mention.query, projectFiles, 8) : [];
+
+  useEffect(() => {
+    setProjectFiles(null);
+    setMention(null);
+  }, [project?.id]);
+
+  useEffect(() => {
+    if (!mention || projectFiles || !project) return;
+    api
+      .listFiles(project.root)
+      .then(setProjectFiles)
+      .catch(() => setProjectFiles([]));
+  }, [mention, projectFiles, project?.root]);
+
+  useEffect(() => setMentionIdx(0), [mention?.query]);
+
+  const updateMention = (value: string, caret: number) => setMention(mentionAt(value, caret));
+
+  const insertMention = (rel: string) => {
+    if (!mention) return;
+    const el = inputRef.current;
+    const caret = el?.selectionStart ?? draft.length;
+    const token = /\s/.test(rel) ? `@"${rel}"` : `@${rel}`;
+    const next = draft.slice(0, mention.start) + token + " " + draft.slice(caret);
+    const pos = mention.start + token.length + 1;
+    setDraft(next);
+    setMention(null);
+    requestAnimationFrame(() => {
+      el?.focus();
+      el?.setSelectionRange(pos, pos);
+    });
+  };
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -342,7 +387,28 @@ export default function AgentPanel({
           </div>
         )}
 
-        <div className="rounded-2xl border border-[#2c2c38] bg-panel p-2 focus-within:border-fuchsia">
+        <div className="relative rounded-2xl border border-[#2c2c38] bg-panel p-2 focus-within:border-fuchsia">
+          {mention && (
+            <div role="listbox" aria-label="File mentions" className="absolute bottom-full left-2 right-2 mb-1.5 max-h-64 overflow-y-auto rounded-xl border border-[#2c2c38] bg-elev p-1 shadow-2xl">
+              {!projectFiles && <div className="px-2.5 py-1.5 text-[11.5px] text-muted">indexing files…</div>}
+              {projectFiles && mentionResults.length === 0 && <div className="px-2.5 py-1.5 text-[11.5px] text-muted">No matching files</div>}
+              {mentionResults.map((f, i) => (
+                <button
+                  key={f}
+                  role="option"
+                  aria-selected={i === mentionIdx}
+                  className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1 text-left text-[12px] ${i === mentionIdx ? "bg-select text-text" : "text-text2 hover:bg-panel"}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    insertMention(f);
+                  }}
+                >
+                  <span className="text-fuchsia2">@</span>
+                  <span className="truncate">{f}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <textarea
             ref={inputRef}
             className="w-full resize-none bg-transparent px-2 py-1.5 text-[13px] text-text outline-none placeholder:text-muted"
@@ -353,8 +419,30 @@ export default function AgentPanel({
             onChange={(e) => {
               setDraft(e.target.value);
               historyIdx.current = -1;
+              updateMention(e.target.value, e.target.selectionStart ?? e.target.value.length);
             }}
+            onClick={(e) => updateMention(e.currentTarget.value, e.currentTarget.selectionStart ?? 0)}
+            onBlur={() => setTimeout(() => setMention(null), 120)}
             onKeyDown={(e) => {
+              if (mention && mentionResults.length > 0) {
+                if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                  e.preventDefault();
+                  const d = e.key === "ArrowDown" ? 1 : -1;
+                  setMentionIdx((i) => (i + d + mentionResults.length) % mentionResults.length);
+                  return;
+                }
+                if (e.key === "Enter" || e.key === "Tab") {
+                  e.preventDefault();
+                  insertMention(mentionResults[mentionIdx]);
+                  return;
+                }
+              }
+              if (mention && e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                setMention(null);
+                return;
+              }
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 submit();
@@ -366,7 +454,7 @@ export default function AgentPanel({
             }}
           />
           <div className="flex items-center gap-1 px-1">
-            <span className="text-[10.5px] text-muted">Enter to send · Shift+Enter newline · ↑ recall</span>
+            <span className="text-[10.5px] text-muted">Enter to send · Shift+Enter newline · @ file · ↑ recall</span>
             <span className="min-w-0 flex-1" />
             {running ? (
               <button className="btn btn-danger" onClick={stopRun} title="Stop the agent (Esc)">

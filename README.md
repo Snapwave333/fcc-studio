@@ -97,6 +97,7 @@ Installers are written to `src-tauri/target/release/bundle/` (NSIS/MSI on Window
 | Shortcut | Action |
 | --- | --- |
 | `Enter` / `Shift+Enter` | Send prompt / newline |
+| `@` in the prompt | Mention a project file (fuzzy autocomplete) |
 | `↑` in an empty prompt | Recall previous prompt |
 | `Esc` | Stop the running agent |
 | `Ctrl/⌘+P` | Quick open a file (fuzzy) |

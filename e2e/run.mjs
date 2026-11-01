@@ -308,6 +308,16 @@ async function main() {
     await waitFor("README in editor", async () => exec("const c = document.querySelector('.cm-content'); return c && c.innerText.includes('# Demo');"));
   });
 
+  await step("@file mentions autocomplete and reach the agent", async () => {
+    const box = "//textarea[contains(@placeholder,'Describe what to build')]";
+    await type(box, "review @READ");
+    await waitFor("mention suggestion", async () => exec("const o = document.querySelector('[aria-label=\"File mentions\"] [role=option]'); return o && o.innerText.includes('README.md');"));
+    await type(box, "\uE007");
+    await waitFor("mention inserted", async () => exec("return document.querySelector('textarea').value === 'review @README.md ';"));
+    await type(box, "\uE007");
+    await waitFor("agent saw mention", async () => (await bodyText()).includes("Echo: review @README.md"), 20000);
+  });
+
   await step("in-app dialogs replace native prompts (new file)", async () => {
     await click("//button[@title='New file']");
     await type("//div[@role='dialog']//input", "notes.txt\uE007");
