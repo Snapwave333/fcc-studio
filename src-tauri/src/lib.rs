@@ -88,6 +88,7 @@ pub fn run() {
             fs_cmds::rename_path,
             fs_cmds::delete_path,
             fs_cmds::search_project,
+            fs_cmds::list_files,
             fs_cmds::open_in_explorer,
             fs_cmds::pick_folder,
             fs_cmds::start_fs_watch,

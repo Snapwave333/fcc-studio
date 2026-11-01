@@ -196,6 +196,7 @@ export const api = {
   deletePath: (path: string) => invoke<void>("delete_path", { path }),
   searchProject: (root: string, query: string) =>
     invoke<{ path: string; line: number; text: string }[]>("search_project", { root, query, maxResults: 300 }),
+  listFiles: (root: string) => invoke<string[]>("list_files", { root }),
   openInExplorer: (path: string) => invoke<void>("open_in_explorer", { path }),
   pickFolder: (title?: string) => invoke<string | null>("pick_folder", { title: title ?? null }),
   startFsWatch: (root: string) => invoke<void>("start_fs_watch", { root }),

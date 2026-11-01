@@ -1,12 +1,14 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useApp } from "./store/useApp";
 import TitleBar from "./components/layout/TitleBar";
 import ThreePanel from "./components/layout/ThreePanel";
 import DialogHost from "./components/common/DialogHost";
+import QuickOpen from "./components/common/QuickOpen";
 
 export default function App() {
   const loadProjects = useApp((s) => s.loadProjects);
   const toast = useApp((s) => s.toast);
+  const [quickOpen, setQuickOpen] = useState(false);
 
   useEffect(() => {
     loadProjects().catch((e) => useApp.getState().showToast(`Could not load projects: ${String(e)}`));
@@ -21,6 +23,9 @@ export default function App() {
       } else if (mod && e.shiftKey && (e.key === "N" || e.key === "n")) {
         e.preventDefault();
         st.newSession();
+      } else if (mod && !e.shiftKey && (e.key === "p" || e.key === "P")) {
+        e.preventDefault();
+        if (st.activeProjectId) setQuickOpen((v) => !v);
       } else if (mod && e.key === "`") {
         e.preventDefault();
         st.setRightTab("terminal");
@@ -53,6 +58,7 @@ export default function App() {
           {toast}
         </div>
       )}
+      {quickOpen && <QuickOpen onClose={() => setQuickOpen(false)} />}
       <DialogHost />
     </div>
   );

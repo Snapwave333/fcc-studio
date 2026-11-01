@@ -294,6 +294,14 @@ async function main() {
     await waitFor("env detects fixture CLI", async () => (await bodyText()).includes("e2e-fixture"));
   });
 
+  await step("quick open (Ctrl/Cmd+P) fuzzy-finds and opens files", async () => {
+    await exec("window.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', ctrlKey: true, bubbles: true }));");
+    await type("//div[@aria-label='Quick open']//input", "readme");
+    await waitFor("ranked result", async () => exec("const b = document.querySelector('[aria-label=\"Quick open\"] [data-idx=\"0\"]'); return b && b.innerText.includes('README.md');"));
+    await type("//div[@aria-label='Quick open']//input", "\uE007");
+    await waitFor("README in editor", async () => exec("const c = document.querySelector('.cm-content'); return c && c.innerText.includes('# Demo');"));
+  });
+
   await step("in-app dialogs replace native prompts (new file)", async () => {
     await click("//button[@title='New file']");
     await type("//div[@role='dialog']//input", "notes.txt\uE007");

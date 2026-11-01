@@ -99,6 +99,7 @@ Installers are written to `src-tauri/target/release/bundle/` (NSIS/MSI on Window
 | `Enter` / `Shift+Enter` | Send prompt / newline |
 | `↑` in an empty prompt | Recall previous prompt |
 | `Esc` | Stop the running agent |
+| `Ctrl/⌘+P` | Quick open a file (fuzzy) |
 | `Ctrl/⌘+Shift+N` | New conversation |
 | ``Ctrl/⌘+` `` | Open the terminal |
 | `Ctrl/⌘+S` | Save in the editor or skill editor |

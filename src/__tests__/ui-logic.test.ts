@@ -47,3 +47,24 @@ describe("tool summaries", () => {
     expect(toolSummary({ id: "3", name: "X", input: { nested: { a: 1 } } })).toBe('{"a":1}');
   });
 });
+
+import { fuzzyScore, rankFiles } from "../components/common/QuickOpen";
+
+describe("quick open ranking", () => {
+  const files = ["src/components/agent/AgentPanel.tsx", "src/app.ts", "README.md", "src/lib/api.ts", "e2e/run.mjs"];
+
+  it("matches subsequences and rejects non-matches", () => {
+    expect(fuzzyScore("agp", "src/components/agent/AgentPanel.tsx")).toBeGreaterThan(0);
+    expect(fuzzyScore("zzz", "src/app.ts")).toBe(-1);
+  });
+
+  it("prefers file-name matches over directory matches", () => {
+    expect(rankFiles("api", files)[0]).toBe("src/lib/api.ts");
+    expect(rankFiles("readme", files)[0]).toBe("README.md");
+    expect(rankFiles("AgentPanel", files)[0]).toBe("src/components/agent/AgentPanel.tsx");
+  });
+
+  it("returns everything up to the limit for an empty query", () => {
+    expect(rankFiles("", files, 2)).toHaveLength(2);
+  });
+});

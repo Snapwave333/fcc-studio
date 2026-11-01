@@ -1,4 +1,4 @@
-import { ReactNode, useState } from "react";
+import { ReactNode, memo, useMemo, useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { api } from "./api";
 
@@ -183,8 +183,8 @@ function CodeBlock({ lang, text }: { lang: string; text: string }) {
   );
 }
 
-export function Markdown({ text }: { text: string }) {
-  const blocks = parseBlocks(text);
+export const Markdown = memo(function Markdown({ text }: { text: string }) {
+  const blocks = useMemo(() => parseBlocks(text), [text]);
   return (
     <div className="md space-y-2 break-words text-[13px] leading-relaxed text-text">
       {blocks.map((b, i) => {
@@ -257,4 +257,4 @@ export function Markdown({ text }: { text: string }) {
       })}
     </div>
   );
-}
+});

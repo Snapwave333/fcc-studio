@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowDown,
@@ -56,7 +56,7 @@ function ToolBlock({ tool, live }: { tool: ToolActivity; live: boolean }) {
   );
 }
 
-function MessageView({ msg }: { msg: ChatMessage }) {
+const MessageView = memo(function MessageView({ msg }: { msg: ChatMessage }) {
   const [copied, setCopied] = useState(false);
   if (msg.role === "user") {
     return (
@@ -108,7 +108,7 @@ function MessageView({ msg }: { msg: ChatMessage }) {
       )}
     </div>
   );
-}
+});
 
 function ThreadMenu({ onClose }: { onClose: () => void }) {
   const threads = useApp((s) => s.threads);

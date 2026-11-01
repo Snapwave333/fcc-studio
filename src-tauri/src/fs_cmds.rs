@@ -143,6 +143,26 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
     }
 }
 
+#[tauri::command]
+pub async fn list_files(root: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let base = PathBuf::from(&root);
+        if !base.is_dir() {
+            return Err(format!("not a directory: {root}"));
+        }
+        let mut files = Vec::new();
+        walk(&base, &mut files, 0);
+        let mut rel: Vec<String> = files
+            .into_iter()
+            .filter_map(|p| p.strip_prefix(&base).ok().map(|r| r.to_string_lossy().replace('\\', "/")))
+            .collect();
+        rel.sort();
+        Ok(rel)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchHit {
     pub path: String,
@@ -336,6 +356,19 @@ mod tests {
         let entries = list_dir(d.to_string_lossy().to_string(), String::new()).unwrap();
         assert!(entries[0].is_dir);
         assert_eq!(entries[1].name, "b.txt");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn list_files_returns_relative_sorted_paths() {
+        let d = tmpdir();
+        std::fs::create_dir_all(d.join("src").join("deep")).unwrap();
+        std::fs::create_dir_all(d.join(".git")).unwrap();
+        std::fs::write(d.join(".git").join("HEAD"), "").unwrap();
+        std::fs::write(d.join("src").join("deep").join("b.ts"), "").unwrap();
+        std::fs::write(d.join("a.md"), "").unwrap();
+        let files = tauri::async_runtime::block_on(list_files(d.to_string_lossy().to_string())).unwrap();
+        assert_eq!(files, vec!["a.md".to_string(), "src/deep/b.ts".to_string()]);
         let _ = std::fs::remove_dir_all(&d);
     }
 
