@@ -48,6 +48,13 @@ pub fn permission_args(autonomy: &str) -> Vec<String> {
     }
 }
 
+pub fn valid_model(m: &str) -> bool {
+    !m.is_empty()
+        && m.len() <= 120
+        && !m.starts_with('-')
+        && m.chars().all(|c| c.is_ascii_alphanumeric() || "-_.:/@[]".contains(c))
+}
+
 pub fn build_command(binary: &str, args: &[String]) -> std::process::Command {
     if let Some((node, script)) = platform::resolve_node_shim(binary) {
         let mut cmd = platform::command(node);
@@ -116,6 +123,7 @@ pub fn start_agent_run(
     session_id: Option<String>,
     extra_system_prompt: Option<String>,
     autonomy: Option<String>,
+    model: Option<String>,
 ) -> Result<RunStarted, String> {
     let fcc = agent_binary().ok_or("fcc-claude not found on PATH. Install Free Claude Code first.")?;
     let root = std::path::PathBuf::from(&project_root);
@@ -132,6 +140,13 @@ pub fn start_agent_run(
         "--verbose".into(),
     ];
     args.extend(permission_args(&autonomy));
+    if let Some(m) = model.as_ref().map(|m| m.trim()).filter(|m| !m.is_empty()) {
+        if !valid_model(m) {
+            return Err(format!("'{m}' is not a valid model name"));
+        }
+        args.push("--model".into());
+        args.push(m.to_string());
+    }
     if let Some(sid) = session_id.as_ref().filter(|s| !s.is_empty()) {
         args.push("--resume".into());
         args.push(sid.clone());
@@ -245,6 +260,16 @@ pub fn cancel_agent_run(state: tauri::State<AgentState>, run_id: String) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_names_are_validated() {
+        assert!(valid_model("sonnet"));
+        assert!(valid_model("claude-opus-4-1"));
+        assert!(valid_model("ollama/qwen2.5-coder:7b"));
+        assert!(!valid_model("--dangerously-skip-permissions"));
+        assert!(!valid_model("a b"));
+        assert!(!valid_model("x;rm -rf"));
+    }
 
     #[test]
     fn autonomy_maps_to_cli_flags() {

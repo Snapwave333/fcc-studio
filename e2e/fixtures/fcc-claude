@@ -22,7 +22,9 @@ process.stdin.on("end", async () => {
   }
   emit({ type: "system", subtype: "init", session_id: session, model: "e2e-model" });
   emit({ type: "stream_event", event: { type: "message_start" } });
-  const intro = `Received ${prompt.length} chars in ${mode} mode.`;
+  const modelIdx = args.indexOf("--model");
+  const modelNote = modelIdx >= 0 ? ` Model ${args[modelIdx + 1]}.` : "";
+  const intro = `Received ${prompt.length} chars in ${mode} mode.${modelNote}`;
   for (const part of intro.match(/.{1,8}/g)) {
     emit({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: part } } });
   }

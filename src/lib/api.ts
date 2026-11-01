@@ -202,13 +202,14 @@ export const api = {
   startFsWatch: (root: string) => invoke<void>("start_fs_watch", { root }),
 
   detectEnvironment: () => invoke<EnvInfo>("detect_environment"),
-  startAgentRun: (projectRoot: string, prompt: string, sessionId?: string, extraSystemPrompt?: string, autonomy?: string) =>
+  startAgentRun: (projectRoot: string, prompt: string, sessionId?: string, extraSystemPrompt?: string, autonomy?: string, model?: string) =>
     invoke<{ run_id: string; pid: number }>("start_agent_run", {
       projectRoot,
       prompt,
       sessionId: sessionId ?? null,
       extraSystemPrompt: extraSystemPrompt ?? null,
       autonomy: autonomy ?? "normal",
+      model: model || null,
     }),
   cancelAgentRun: (runId: string) => invoke<void>("cancel_agent_run", { runId }),
 

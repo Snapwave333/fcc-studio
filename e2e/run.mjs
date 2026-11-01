@@ -374,6 +374,16 @@ async function main() {
     await waitFor("retry succeeded", async () => (await bodyText()).includes("Echo: FLAKY task"), 20000);
   });
 
+  await step("model picker passes --model to the agent and persists per project", async () => {
+    const sel = await find("//select[@aria-label='Model']");
+    await exec("const s = arguments[0]; const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set; set.call(s, 'opus'); s.dispatchEvent(new Event('change', { bubbles: true }));", { [ELEMENT]: sel });
+    await type("//textarea[contains(@placeholder,'Describe what to build')]", "which model\uE007");
+    await waitFor("model flag echoed", async () => (await bodyText()).includes("Model opus."), 20000);
+    const projects = await invoke("list_projects");
+    const stored = await invoke("kv_get", { key: `model.${projects[0].id}` });
+    if (stored !== "opus") throw new Error(`model not persisted: ${stored}`);
+  });
+
   await step("in-app dialogs replace native prompts (new file)", async () => {
     await click("//button[@title='New file']");
     await type("//div[@role='dialog']//input", "notes.txt\uE007");

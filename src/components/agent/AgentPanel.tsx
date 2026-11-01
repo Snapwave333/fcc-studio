@@ -22,6 +22,56 @@ import { Markdown } from "../../lib/markdown";
 import { relativeTime } from "../../lib/format";
 import { rankFiles } from "../common/QuickOpen";
 import { api } from "../../lib/api";
+import { promptDialog } from "../../lib/dialog";
+
+const MODEL_PRESETS: [string, string][] = [
+  ["", "default model"],
+  ["sonnet", "sonnet"],
+  ["opus", "opus"],
+  ["haiku", "haiku"],
+];
+
+function ModelPicker() {
+  const model = useApp((s) => s.model);
+  const setModel = useApp((s) => s.setModel);
+  const autonomy = useApp((s) => s.autonomy);
+  const running = useApp((s) => s.running);
+  const known = MODEL_PRESETS.some(([v]) => v === model);
+  if (autonomy === "redline") {
+    return <span className="text-[10.5px] text-fuchsia2" title="Redline routes every request to the local model">local model</span>;
+  }
+  return (
+    <select
+      aria-label="Model"
+      className="cursor-pointer rounded-md bg-transparent px-1 py-0.5 text-[10.5px] text-muted outline-none hover:bg-elev hover:text-text"
+      value={known ? model : "__custom"}
+      disabled={running}
+      title="Model passed to the agent with --model for this project"
+      onChange={async (e) => {
+        const v = e.target.value;
+        if (v === "__other") {
+          const custom = await promptDialog("Custom model", {
+            message: "Any model name or alias your Free Claude Code setup understands.",
+            placeholder: "claude-sonnet-4-5 or provider/model",
+            defaultValue: known ? "" : model,
+            confirmLabel: "Use model",
+          });
+          if (custom) setModel(custom);
+          return;
+        }
+        if (v !== "__custom") setModel(v);
+      }}
+    >
+      {MODEL_PRESETS.map(([v, label]) => (
+        <option key={v || "default"} value={v}>
+          {label}
+        </option>
+      ))}
+      {!known && <option value="__custom">{model}</option>}
+      <option value="__other">custom…</option>
+    </select>
+  );
+}
 
 export function mentionAt(text: string, caret: number): { start: number; query: string } | null {
   const before = text.slice(0, caret);
@@ -499,7 +549,8 @@ export default function AgentPanel({
             }}
           />
           <div className="flex items-center gap-1 px-1">
-            <span className="text-[10.5px] text-muted">Enter to send · Shift+Enter newline · @ file · ↑ recall</span>
+            <ModelPicker />
+            <span className="truncate text-[10.5px] text-muted">Enter to send · Shift+Enter newline · @ file · ↑ recall</span>
             <span className="min-w-0 flex-1" />
             {running ? (
               <button className="btn btn-danger" onClick={stopRun} title="Stop the agent (Esc)">

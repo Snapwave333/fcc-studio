@@ -45,6 +45,8 @@ interface AppState {
   pendingSkill: string | null;
   rightTab: RightTab;
   ev: AgentEventState;
+  model: string;
+  setModel: (model: string) => Promise<void>;
 
   setAutonomy: (level: Autonomy) => Promise<boolean>;
   activateRedline: (model: string) => Promise<boolean>;
@@ -261,6 +263,14 @@ export const useApp = create<AppState>((set, get) => ({
   pendingSkill: null,
   rightTab: "preview",
   ev: emptyAgentEventState(),
+  model: "",
+
+  setModel: async (model) => {
+    const value = model.trim();
+    set({ model: value });
+    const id = get().activeProjectId;
+    await api.kvSet(id ? `model.${id}` : "model.default", value).catch(() => {});
+  },
 
   setAutonomy: async (level) => {
     const prev = get().autonomy;
@@ -388,6 +398,12 @@ export const useApp = create<AppState>((set, get) => ({
     });
     if (!id) return;
     api.kvSet("project.last", id).catch(() => {});
+    api
+      .kvGet(`model.${id}`)
+      .then((m) => {
+        if (get().activeProjectId === id) set({ model: m ?? "" });
+      })
+      .catch(() => {});
     const p = get().projects.find((x) => x.id === id);
     if (p) api.startFsWatch(p.root).catch(() => {});
     const stored = await api.listMessages(id).catch(() => [] as StoredMessage[]);
@@ -472,10 +488,17 @@ export const useApp = create<AppState>((set, get) => ({
 
     const autonomy = get().autonomy;
     api
-      .auditWrite("run:start", `mode=${autonomy} session=${get().sessionId || "new"} prompt="${text.slice(0, 120)}"`)
+      .auditWrite("run:start", `mode=${autonomy} model=${get().model || "default"} session=${get().sessionId || "new"} prompt="${text.slice(0, 120)}"`)
       .catch(() => {});
     try {
-      const res = await api.startAgentRun(project.root, fullPrompt, get().sessionId || undefined, systemPrompt || undefined, autonomy);
+      const res = await api.startAgentRun(
+        project.root,
+        fullPrompt,
+        get().sessionId || undefined,
+        systemPrompt || undefined,
+        autonomy,
+        autonomy === "redline" ? undefined : get().model || undefined
+      );
       if (get().running && get().runId === null) set({ runId: res.run_id });
       if (!get().threads.some((t) => t.id === threadId)) {
         set({
