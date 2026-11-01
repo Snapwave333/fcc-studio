@@ -20,10 +20,10 @@ export default function SkillsPane() {
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.id]);
 
   const open = async (s: SkillInfo) => {
+    if (dirty && selected && !confirm(`Discard unsaved changes to ${selected.name}?`)) return;
     const c = await api.skillsRead(s.path).catch((e) => {
       showToast(String(e));
       return "";
@@ -102,6 +102,9 @@ export default function SkillsPane() {
                   });
                 if (path) {
                   await load();
+                  const fresh = await api.skillsList(project.root).catch(() => null);
+                  const match = fresh?.skills.find((x) => x.path === path);
+                  if (match) open(match);
                   showToast(`Created in ${project.name}`);
                 }
               }}
@@ -132,10 +135,14 @@ export default function SkillsPane() {
                 className="btn btn-primary px-2 py-0.5"
                 disabled={!dirty}
                 onClick={async () => {
-                  await api.skillsWrite(selected.path, content).catch((e) => showToast(String(e)));
-                  setDirty(false);
-                  showToast("Skill saved");
-                  await load();
+                  try {
+                    await api.skillsWrite(selected.path, content);
+                    setDirty(false);
+                    showToast("Skill saved");
+                    await load();
+                  } catch (e) {
+                    showToast(`Save failed: ${String(e)}`);
+                  }
                 }}
               >
                 Save

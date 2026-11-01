@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { RefreshCw } from "lucide-react";
-import { api, EnvInfo, RelayStatus } from "../../lib/api";
+import { api, ElevationStatus, EnvInfo, RelayStatus } from "../../lib/api";
 import { useApp } from "../../store/useApp";
 
 function Row({ label, ok, detail }: { label: string; ok: boolean | null; detail?: string }) {
@@ -21,14 +21,23 @@ export default function EnvPane() {
   const showToast = useApp((s) => s.showToast);
   const [env, setEnv] = useState<EnvInfo | null>(null);
   const [relay, setRelay] = useState<RelayStatus | null>(null);
-  const [elev, setElev] = useState<{ is_admin: boolean; user: string } | null>(null);
+  const [elev, setElev] = useState<ElevationStatus | null>(null);
   const [audit, setAudit] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
 
   const refresh = async () => {
-    setEnv(await api.detectEnvironment().catch(() => null));
-    setRelay(await api.relayStatus().catch(() => null));
-    setElev(await api.elevationStatus().catch(() => null));
-    setAudit(await api.auditRead().catch(() => []));
+    setLoading(true);
+    const [e, r, el, a] = await Promise.all([
+      api.detectEnvironment().catch(() => null),
+      api.relayStatus().catch(() => null),
+      api.elevationStatus().catch(() => null),
+      api.auditRead().catch(() => [] as string[]),
+    ]);
+    setEnv(e);
+    setRelay(r);
+    setElev(el);
+    setAudit(a);
+    setLoading(false);
   };
 
   useEffect(() => {
@@ -38,22 +47,26 @@ export default function EnvPane() {
   }, []);
 
   return (
-    <div className="space-y-4 overflow-y-auto p-3 text-[12px]">
+    <div className="h-full space-y-4 overflow-y-auto p-3 text-[12px]">
       <div className="flex items-center justify-between">
         <span className="text-[10.5px] font-semibold uppercase tracking-wider text-muted">environment</span>
-        <button className="btn btn-ghost px-1.5" onClick={refresh}>
-          <RefreshCw size={13} />
+        <button className="btn btn-ghost px-1.5" onClick={refresh} title="Re-scan environment">
+          <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
         </button>
       </div>
 
       <Row
         label="Free Claude Code (fcc-claude)"
-        ok={!!env?.fcc_claude}
+        ok={env ? !!env.fcc_claude : null}
         detail={env?.fcc_claude ?? "not found on PATH"}
       />
-      <Row label="Claude Code CLI" ok={!!env?.claude} detail={env?.claude_version ?? "not found"} />
-      <Row label="Git" ok={!!env?.git} detail={env?.git ? "available" : "not found"} />
-      <Row label="Node" ok={!!env?.node} detail={env?.node ? "available" : "not found"} />
+      <Row
+        label="Claude Code CLI"
+        ok={env ? !!env.claude : null}
+        detail={env?.claude ? env.claude_version || env.claude : "not found"}
+      />
+      <Row label="Git" ok={env ? !!env.git : null} detail={env?.git ? env.git_version || "available" : "not found"} />
+      <Row label="Node" ok={env ? !!env.node : null} detail={env?.node ? env.node_version || "available" : "not found"} />
 
       <div className="text-[10.5px] font-semibold uppercase tracking-wider text-muted">
         opencode chrome relay
@@ -73,11 +86,11 @@ export default function EnvPane() {
 
       <div className="text-[10.5px] font-semibold uppercase tracking-wider text-muted">autonomy · privileges</div>
       <Row label="Process privileges" ok={elev?.is_admin ?? null} detail={elev ? (elev.is_admin ? "Administrator" : `standard user (${elev.user})`) : "unknown"} />
-      {!elev?.is_admin && (
+      {elev && !elev.is_admin && elev.can_request && (
         <div className="space-y-1 rounded-xl border border-[#22222c] bg-panel p-3">
           <p className="text-[11px] leading-relaxed text-muted">
             YOLO mode can operate with Administrator privileges. Elevation requires UAC approval —
-            Windows launches an elevated copy of FCC Studio; approve the prompt to allow it.
+            Windows launches an elevated copy of Serenity; approve the prompt to allow it.
           </p>
           <button
             className="btn btn-primary"
@@ -102,13 +115,13 @@ export default function EnvPane() {
 
       <div className="text-[10.5px] font-semibold uppercase tracking-wider text-muted">about</div>
       <p className="px-1 text-[11px] leading-relaxed text-muted">
-        FCC Studio is a local-first desktop workspace for Free Claude Code. Model routing, the
-        fallback cascade and all provider configuration live inside the CLI and are never duplicated
-        here.
+        Serenity is a local-first desktop workspace for Free Claude Code. Model routing, the fallback
+        cascade and all provider configuration live inside the CLI and are never duplicated here.
+        Panel sizes, the open tab and the active project are remembered between launches.
       </p>
-      <button className="btn btn-ghost w-full justify-center" onClick={() => showToast("Settings are stored per project")}>
-        Workspace layout is saved automatically
-      </button>
+      <div className="px-1 text-[10.5px] text-muted">
+        platform {env?.platform ?? "…"} · shortcuts: Ctrl+B left panel · Ctrl+J right panel · Ctrl+L prompt · Esc stop
+      </div>
     </div>
   );
 }

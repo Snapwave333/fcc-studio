@@ -1,7 +1,26 @@
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use tauri::Emitter;
+
+use crate::proc;
+
+#[derive(Default)]
+pub struct WatchState {
+    current: Mutex<Option<(String, Arc<AtomicBool>)>>,
+}
+
+impl WatchState {
+    pub fn stop(&self) {
+        if let Ok(mut guard) = self.current.lock() {
+            if let Some((_, flag)) = guard.take() {
+                flag.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FsEntry {
@@ -67,10 +86,20 @@ pub fn write_file(path: String, content: String) -> Result<(), String> {
         .parent()
         .ok_or_else(|| "invalid path".to_string())?;
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    let tmp = target.with_extension("fcc-tmp");
+    let file_name = target
+        .file_name()
+        .ok_or_else(|| "invalid path".to_string())?
+        .to_string_lossy()
+        .to_string();
+    let tmp = parent.join(format!(".{file_name}.fcc-tmp"));
     std::fs::write(&tmp, content.as_bytes()).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &target).map_err(|e| e.to_string())?;
-    Ok(())
+    if let Ok(meta) = std::fs::metadata(&target) {
+        let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    }
+    std::fs::rename(&tmp, &target).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e.to_string()
+    })
 }
 
 #[tauri::command]
@@ -80,6 +109,9 @@ pub fn create_dir(path: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn rename_path(from: String, to: String) -> Result<(), String> {
+    if Path::new(&to).exists() {
+        return Err(format!("{to} already exists"));
+    }
     std::fs::rename(&from, &to).map_err(|e| e.to_string())
 }
 
@@ -97,6 +129,7 @@ fn is_ignored(name: &str) -> bool {
     matches!(
         name,
         ".git" | "node_modules" | "dist" | "build" | "target" | ".venv" | "venv" | "__pycache__" | ".next" | ".cache"
+            | ".turbo" | ".svelte-kit" | ".nuxt" | "coverage" | ".idea" | ".gradle" | "out"
     )
 }
 
@@ -113,10 +146,10 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
         if is_ignored(&name) {
             continue;
         }
-        if path.is_dir() {
-            walk(&path, out, depth + 1);
-        } else {
-            out.push(path);
+        match entry.file_type() {
+            Ok(ft) if ft.is_dir() => walk(&path, out, depth + 1),
+            Ok(ft) if ft.is_file() => out.push(path),
+            _ => {}
         }
     }
 }
@@ -129,14 +162,18 @@ pub struct SearchHit {
 }
 
 #[tauri::command]
-pub fn search_project(root: String, query: String, max_results: Option<u32>) -> Result<Vec<SearchHit>, String> {
+pub async fn search_project(root: String, query: String, max_results: Option<u32>) -> Result<Vec<SearchHit>, String> {
+    proc::blocking(move || Ok(search(&root, &query, max_results))).await
+}
+
+pub fn search(root: &str, query: &str, max_results: Option<u32>) -> Vec<SearchHit> {
     let needle = query.to_lowercase();
-    if needle.is_empty() {
-        return Ok(Vec::new());
+    if needle.trim().is_empty() {
+        return Vec::new();
     }
     let cap = max_results.unwrap_or(300).min(2000) as usize;
     let mut files = Vec::new();
-    walk(Path::new(&root), &mut files, 0);
+    walk(Path::new(root), &mut files, 0);
     let mut hits = Vec::new();
     for file in files {
         if hits.len() >= cap {
@@ -145,6 +182,17 @@ pub fn search_project(root: String, query: String, max_results: Option<u32>) -> 
         let Ok(meta) = std::fs::metadata(&file) else { continue };
         if meta.len() > 1_500_000 {
             continue;
+        }
+        let file_name = file.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+        if file_name.contains(&needle) {
+            hits.push(SearchHit {
+                path: file.to_string_lossy().to_string(),
+                line: 0,
+                text: String::new(),
+            });
+            if hits.len() >= cap {
+                break;
+            }
         }
         let Ok(content) = std::fs::read_to_string(&file) else { continue };
         for (i, line) in content.lines().enumerate() {
@@ -160,16 +208,15 @@ pub fn search_project(root: String, query: String, max_results: Option<u32>) -> 
             }
         }
     }
-    Ok(hits)
+    hits
 }
 
 #[tauri::command]
 pub fn open_in_explorer(path: String) -> Result<(), String> {
-    std::process::Command::new("explorer")
-        .arg(&path)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    if !Path::new(&path).exists() {
+        return Err(format!("path does not exist: {path}"));
+    }
+    proc::open_path(&path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -182,23 +229,51 @@ pub async fn pick_folder(title: Option<String>) -> Result<Option<String>, String
     Ok(res.map(|h| h.path().to_string_lossy().to_string()))
 }
 
+fn is_noise(path: &Path) -> bool {
+    path.components().any(|c| match c {
+        std::path::Component::Normal(n) => is_ignored(&n.to_string_lossy()),
+        _ => false,
+    }) || path.extension().map(|e| e == "fcc-tmp").unwrap_or(false)
+}
+
 #[tauri::command]
-pub fn start_fs_watch(app: tauri::AppHandle, root: String) -> Result<(), String> {
+pub fn start_fs_watch(app: tauri::AppHandle, state: tauri::State<WatchState>, root: String) -> Result<(), String> {
     use notify::{RecursiveMode, Watcher};
+    let stop = Arc::new(AtomicBool::new(false));
+    {
+        let mut guard = state.current.lock().map_err(|e| e.to_string())?;
+        if let Some((current_root, _)) = guard.as_ref() {
+            if *current_root == root {
+                return Ok(());
+            }
+        }
+        if let Some((_, flag)) = guard.take() {
+            flag.store(true, Ordering::SeqCst);
+        }
+        *guard = Some((root.clone(), stop.clone()));
+    }
     std::thread::spawn(move || {
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::channel::<notify::Result<notify::Event>>();
         let Ok(mut watcher) = notify::recommended_watcher(tx) else {
             return;
         };
         if watcher.watch(Path::new(&root), RecursiveMode::Recursive).is_err() {
             return;
         }
-        loop {
+        let relevant = |ev: &notify::Result<notify::Event>| match ev {
+            Ok(e) => e.paths.iter().any(|p| !is_noise(p)),
+            Err(_) => false,
+        };
+        while !stop.load(Ordering::SeqCst) {
             match rx.recv_timeout(std::time::Duration::from_millis(400)) {
-                Ok(_) => {
-                    // drain the debounce window
-                    while rx.recv_timeout(std::time::Duration::from_millis(300)).is_ok() {}
-                    let _ = app.emit("fs-changed", serde_json::json!({ "root": root }));
+                Ok(ev) => {
+                    let mut changed = relevant(&ev);
+                    while let Ok(more) = rx.recv_timeout(std::time::Duration::from_millis(300)) {
+                        changed |= relevant(&more);
+                    }
+                    if changed && !stop.load(Ordering::SeqCst) {
+                        let _ = app.emit("fs-changed", serde_json::json!({ "root": root }));
+                    }
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
@@ -206,4 +281,42 @@ pub fn start_fs_watch(app: tauri::AppHandle, root: String) -> Result<(), String>
         }
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_finds_content_and_file_names_and_skips_ignored_dirs() {
+        let root = std::env::temp_dir().join(format!("fcc-search-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        std::fs::write(root.join("src/app.ts"), "const Needle = 1;\nother\n").unwrap();
+        std::fs::write(root.join("src/needle.md"), "nothing").unwrap();
+        std::fs::write(root.join("node_modules/pkg/index.js"), "needle").unwrap();
+        let hits = search(&root.to_string_lossy(), "needle", None);
+        assert!(hits.iter().any(|h| h.path.ends_with("app.ts") && h.line == 1));
+        assert!(hits.iter().any(|h| h.path.ends_with("needle.md") && h.line == 0));
+        assert!(!hits.iter().any(|h| h.path.contains("node_modules")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn write_file_is_atomic_and_creates_parents() {
+        let root = std::env::temp_dir().join(format!("fcc-write-test-{}", uuid::Uuid::new_v4()));
+        let target = root.join("a/b/c.txt");
+        write_file(target.to_string_lossy().to_string(), "one".into()).unwrap();
+        write_file(target.to_string_lossy().to_string(), "two".into()).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "two");
+        assert_eq!(std::fs::read_dir(root.join("a/b")).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn noise_filter_ignores_build_dirs() {
+        assert!(is_noise(Path::new("/p/node_modules/x.js")));
+        assert!(is_noise(Path::new("/p/.git/index")));
+        assert!(!is_noise(Path::new("/p/src/main.ts")));
+    }
 }

@@ -14,21 +14,43 @@ export default function GitPane() {
   const [branches, setBranches] = useState<string[]>([]);
   const [newBranch, setNewBranch] = useState("");
 
+  const fsVersion = useApp((s) => s.fsVersion);
+  const [busy, setBusy] = useState(false);
+
   const refresh = useCallback(async () => {
     if (!project) return;
     const st = await api.gitStatus(project.root).catch(() => null);
     setStatus(st);
     if (st?.repo) {
-      setLog(await api.gitLog(project.root, 30).catch(() => []));
-      setBranches(await api.gitBranches(project.root).catch(() => []));
+      const [l, b] = await Promise.all([
+        api.gitLog(project.root, 30).catch(() => [] as CommitInfo[]),
+        api.gitBranches(project.root).catch(() => [] as string[]),
+      ]);
+      setLog(l);
+      setBranches(b);
     }
-  }, [project?.id]);
+  }, [project?.root]);
+
+  useEffect(() => {
+    setSelected(null);
+    setDiff("");
+    refresh();
+    const t = setInterval(() => {
+      if (document.visibilityState === "visible") refresh();
+    }, 10000);
+    return () => clearInterval(t);
+  }, [refresh]);
 
   useEffect(() => {
     refresh();
-    const t = setInterval(refresh, 5000);
-    return () => clearInterval(t);
-  }, [refresh]);
+  }, [fsVersion]);
+
+  const commit = () =>
+    act(async () => {
+      await api.gitCommit(project!.root, commitMsg.trim());
+      setCommitMsg("");
+      showToast("Committed");
+    });
 
   const showDiff = async (path: string) => {
     if (!project) return;
@@ -37,11 +59,15 @@ export default function GitPane() {
   };
 
   const act = async (fn: () => Promise<any>) => {
+    if (busy) return;
+    setBusy(true);
     try {
       await fn();
-      await refresh();
     } catch (e) {
       showToast(String(e));
+    } finally {
+      setBusy(false);
+      await refresh();
     }
   };
 
@@ -88,8 +114,8 @@ export default function GitPane() {
           }}
         />
         <span className="min-w-0 flex-1" />
-        <span className="text-[11px] text-muted">
-          ↑{status.ahead} ↓{status.behind}
+        <span className="text-[11px] text-muted" title={status.upstream ? `tracking ${status.upstream}` : "no upstream branch"}>
+          {status.upstream ? `↑${status.ahead} ↓${status.behind}` : "no upstream"}
         </span>
       </div>
 
@@ -199,28 +225,19 @@ export default function GitPane() {
           value={commitMsg}
           onChange={(e) => setCommitMsg(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && commitMsg.trim()) {
-              act(async () => {
-                await api.gitCommit(project.root, commitMsg.trim());
-                setCommitMsg("");
-              });
-            }
+            if (e.key === "Enter" && commitMsg.trim() && staged.length > 0) commit();
           }}
         />
         <button
           className="btn btn-primary"
-          disabled={!commitMsg.trim() || staged.length === 0}
-          onClick={() =>
-            act(async () => {
-              await api.gitCommit(project.root, commitMsg.trim());
-              setCommitMsg("");
-            })
-          }
+          disabled={!commitMsg.trim() || staged.length === 0 || busy}
+          onClick={commit}
         >
           Commit
         </button>
         <button
           className="btn btn-ghost"
+          disabled={unstaged.length === 0 || busy}
           title="Stage all changes"
           onClick={() => act(() => api.gitStage(project.root, status.entries.filter((e) => !e.staged).map((e) => e.path)))}
         >

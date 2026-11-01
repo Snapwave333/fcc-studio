@@ -6,6 +6,7 @@ import { useApp } from "../../store/useApp";
 export default function MemoryPane() {
   const project = useApp((s) => s.activeProject());
   const showToast = useApp((s) => s.showToast);
+  const patchProject = useApp((s) => s.patchProject);
   const [scope, setScope] = useState<"project" | "global">("project");
   const [entries, setEntries] = useState<MemoryEntry[]>([]);
   const [title, setTitle] = useState("");
@@ -24,7 +25,6 @@ export default function MemoryPane() {
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope, project?.id]);
 
   const save = async () => {
@@ -56,9 +56,14 @@ export default function MemoryPane() {
           />
           <button
             className="btn btn-primary mt-1.5"
+            disabled={instructions === project.instructions}
             onClick={async () => {
-              await api.updateProject(project.id, { instructions }).catch((e) => showToast(String(e)));
-              showToast("Instructions saved");
+              try {
+                await patchProject(project.id, { instructions });
+                showToast("Instructions saved");
+              } catch (e) {
+                showToast(String(e));
+              }
             }}
           >
             Save instructions
@@ -94,9 +99,22 @@ export default function MemoryPane() {
             <option value="bug">bug</option>
             <option value="task">task</option>
           </select>
-          <button className="btn btn-primary flex-1 justify-center" onClick={save}>
+          <button className="btn btn-primary flex-1 justify-center" onClick={save} disabled={!title.trim()}>
             {editing ? "Update memory" : "Add memory"}
           </button>
+          {editing && (
+            <button
+              className="btn btn-ghost"
+              onClick={() => {
+                setEditing(null);
+                setTitle("");
+                setBody("");
+                setKind("note");
+              }}
+            >
+              Cancel
+            </button>
+          )}
         </div>
       </div>
 
@@ -120,7 +138,13 @@ export default function MemoryPane() {
               <button
                 className="hidden text-muted hover:text-err group-hover:block"
                 onClick={async () => {
-                  await api.memoryDelete(m.id);
+                  if (!confirm(`Delete memory "${m.title}"?`)) return;
+                  await api.memoryDelete(m.id).catch((e) => showToast(String(e)));
+                  if (editing === m.id) {
+                    setEditing(null);
+                    setTitle("");
+                    setBody("");
+                  }
                   await load();
                 }}
               >

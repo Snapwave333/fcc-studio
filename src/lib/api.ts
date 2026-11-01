@@ -33,6 +33,7 @@ export interface MemoryEntry {
 export interface GitStatus {
   repo: boolean;
   branch: string;
+  upstream: string;
   ahead: number;
   behind: number;
   entries: { path: string; x: string; y: string; staged: boolean }[];
@@ -50,9 +51,50 @@ export interface EnvInfo {
   claude: string | null;
   claude_version: string;
   node: string | null;
+  node_version: string;
   git: string | null;
+  git_version: string;
   browser_relay: string | null;
   relay_config_found: boolean;
+  platform: string;
+}
+
+export interface StoredMessage {
+  id: string;
+  project_id: string;
+  session_id: string;
+  role: string;
+  content: string;
+  meta: string;
+  created_at: string;
+}
+
+export interface SessionSummary {
+  session_id: string;
+  first_prompt: string;
+  messages: number;
+  started_at: string;
+  last_at: string;
+}
+
+export interface ElevationStatus {
+  is_admin: boolean;
+  user: string;
+  exe: string;
+  can_request: boolean;
+}
+
+export interface BenchProgress {
+  model: string;
+  task: string;
+  done: boolean;
+  finished: boolean;
+  index: number;
+  total: number;
+  score: number;
+  max: number;
+  latency_ms: number;
+  detail: string;
 }
 
 export interface RelayStatus {
@@ -104,6 +146,7 @@ export interface RedlineStatus {
 export interface LeaderboardRow {
   model: string;
   avg_score: number;
+  score_pct: number;
   tasks_run: number;
   avg_latency_ms: number;
   last_run: string;
@@ -126,7 +169,11 @@ export const api = {
   deleteProject: (id: string) => invoke<void>("delete_project", { id }),
   addMessage: (projectId: string, sessionId: string, role: string, content: string, meta: string) =>
     invoke<string>("add_message", { projectId, sessionId, role, content, meta }),
-  listMessages: (projectId: string) => invoke<any[]>("list_messages", { projectId }),
+  listMessages: (projectId: string, sessionId?: string | null, limit?: number) =>
+    invoke<StoredMessage[]>("list_messages", { projectId, sessionId: sessionId ?? null, limit: limit ?? null }),
+  listSessions: (projectId: string) => invoke<SessionSummary[]>("list_sessions", { projectId }),
+  updateMessageSession: (projectId: string, sessionId: string) =>
+    invoke<void>("update_message_session", { projectId, sessionId }),
   memoryList: (scope: string) => invoke<MemoryEntry[]>("memory_list", { scope }),
   memorySave: (id: string | null, scope: string, kind: string, title: string, body: string) =>
     invoke<MemoryEntry>("memory_save", { id, scope, kind, title, body }),
@@ -156,8 +203,16 @@ export const api = {
       autonomy: autonomy ?? "yolo",
     }),
   cancelAgentRun: (runId: string) => invoke<void>("cancel_agent_run", { runId }),
+  activeAgentRuns: () => invoke<string[]>("active_agent_runs"),
 
-  ptyCreate: (program: string, cwd?: string) => invoke<{ id: string }>("pty_create", { program, cwd: cwd ?? null }),
+  ptyCreate: (program: string | null, cwd?: string, rows?: number, cols?: number) =>
+    invoke<{ id: string; program: string }>("pty_create", {
+      program,
+      cwd: cwd ?? null,
+      rows: rows ?? null,
+      cols: cols ?? null,
+    }),
+  ptyDefaultShell: () => invoke<string>("pty_default_shell"),
   ptyWrite: (id: string, data: string) => invoke<void>("pty_write", { id, data }),
   ptyResize: (id: string, rows: number, cols: number) => invoke<void>("pty_resize", { id, rows, cols }),
   ptyKill: (id: string) => invoke<void>("pty_kill", { id }),
@@ -168,6 +223,7 @@ export const api = {
 
   previewStart: (root: string) => invoke<number>("preview_start", { root }),
   previewStop: () => invoke<void>("preview_stop"),
+  previewState: () => invoke<{ port: number; root: string } | null>("preview_state"),
   devServerScan: () => invoke<{ port: number }[]>("dev_server_scan"),
 
   gitStatus: (root: string) => invoke<GitStatus>("git_status", { root }),
@@ -197,7 +253,7 @@ export const api = {
     invoke<string>("skills_create", { scope, projectRoot, name }),
   skillsDelete: (path: string) => invoke<void>("skills_delete", { path }),
 
-  elevationStatus: () => invoke<{ is_admin: boolean; user: string; exe: string }>("elevation_status"),
+  elevationStatus: () => invoke<ElevationStatus>("elevation_status"),
   requestElevation: () => invoke<void>("request_elevation"),
   auditWrite: (event: string, detail: string) => invoke<void>("audit_write", { event, detail }),
   auditRead: () => invoke<string[]>("audit_read"),

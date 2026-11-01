@@ -1,1 +1,46 @@
-{"name":"serenity","description":"Autonomous Vibe-Coding Studio for Free Claude Code","private":true,"version":"0.1.0","type":"module","scripts":{"dev":"vite","build":"tsc && vite build","tauri":"tauri"},"dependencies":{"@tauri-apps/api":"^2.1.1","@uiw/react-codemirror":"^4.23.7","@xterm/addon-fit":"^0.10.0","@xterm/xterm":"^5.5.0","lucide-react":"^0.469.0","react":"^18.3.1","react-dom":"^18.3.1","zustand":"^5.0.2"},"devDependencies":{"@tailwindcss/vite":"^4.0.0","@tauri-apps/cli":"^2.1.0","@types/react":"^18.3.12","@types/react-dom":"^18.3.1","@vitejs/plugin-react":"^4.3.4","tailwindcss":"^4.0.0","typescript":"^5.6.3","vite":"^6.0.3"},"allowScripts":{"esbuild@0.25.12":true}}
+{
+  "name": "serenity",
+  "description": "Autonomous Vibe-Coding Studio for Free Claude Code",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "test": "vitest run",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "check": "tsc --noEmit && vitest run",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@codemirror/lang-css": "^6.3.1",
+    "@codemirror/lang-html": "^6.4.12",
+    "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/lang-json": "^6.0.2",
+    "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/lang-python": "^6.2.1",
+    "@codemirror/lang-rust": "^6.0.2",
+    "@tauri-apps/api": "^2.1.1",
+    "@uiw/react-codemirror": "^4.23.7",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "lucide-react": "^0.469.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@tauri-apps/cli": "^2.1.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.3",
+    "vitest": "^3.2.7"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true
+  }
+}

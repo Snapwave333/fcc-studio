@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
+import { useApp } from "../../store/useApp";
 import LeftPanel from "../nav/LeftPanel";
 import AgentPanel from "../agent/AgentPanel";
 import RightPanel from "../workspace/RightPanel";
@@ -16,6 +17,8 @@ function Resizer({
   const onMouseDown = (e: React.MouseEvent) => {
     dragging.current = true;
     last.current = e.clientX;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
     e.preventDefault();
   };
 
@@ -27,7 +30,10 @@ function Resizer({
       onDelta(side === "left" ? dx : -dx);
     };
     const up = () => {
+      if (!dragging.current) return;
       dragging.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
     };
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
@@ -48,36 +54,54 @@ function Resizer({
 }
 
 export default function ThreePanel() {
-  const [leftW, setLeftW] = useState(268);
-  const [rightW, setRightW] = useState(480);
-  const [leftOpen, setLeftOpen] = useState(true);
-  const [rightOpen, setRightOpen] = useState(true);
+  const layout = useApp((s) => s.layout);
+  const updateLayout = useApp((s) => s.updateLayout);
+  const { leftW, rightW, leftOpen, rightOpen } = layout;
 
-  const nudgeLeft = (dx: number) => setLeftW((w) => Math.min(460, Math.max(180, w + dx)));
-  const nudgeRight = (dx: number) => setRightW((w) => Math.min(900, Math.max(300, w + dx)));
+  const nudgeLeft = (dx: number) => {
+    const w = useApp.getState().layout.leftW;
+    updateLayout({ leftW: Math.min(460, Math.max(180, w + dx)) });
+  };
+  const nudgeRight = (dx: number) => {
+    const w = useApp.getState().layout.rightW;
+    updateLayout({ rightW: Math.min(1100, Math.max(300, w + dx)) });
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        updateLayout({ leftOpen: !useApp.getState().layout.leftOpen });
+      } else if (e.key.toLowerCase() === "j") {
+        e.preventDefault();
+        updateLayout({ rightOpen: !useApp.getState().layout.rightOpen });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [updateLayout]);
 
   return (
     <div className="flex h-full w-full">
       {leftOpen && (
         <div className="order-0 min-w-0 shrink-0" style={{ width: leftW }}>
-          <LeftPanel width={leftW} onToggle={() => setLeftOpen(false)} />
+          <LeftPanel width={leftW} onToggle={() => updateLayout({ leftOpen: false })} />
         </div>
       )}
-      <Resizer side="left" onDelta={nudgeLeft} />
+      {leftOpen && <Resizer side="left" onDelta={nudgeLeft} />}
       <div className="order-2 min-w-0 flex-1">
         <AgentPanel
           leftOpen={leftOpen}
           rightOpen={rightOpen}
-          onToggleLeft={() => setLeftOpen((v) => !v)}
-          onToggleRight={() => setRightOpen((v) => !v)}
+          onToggleLeft={() => updateLayout({ leftOpen: !leftOpen })}
+          onToggleRight={() => updateLayout({ rightOpen: !rightOpen })}
         />
       </div>
-      <Resizer side="right" onDelta={nudgeRight} />
-      {rightOpen && (
-        <div className="order-5 min-w-0 shrink-0" style={{ width: rightW }}>
-          <RightPanel width={rightW} onToggle={() => setRightOpen(false)} />
-        </div>
-      )}
+      {rightOpen && <Resizer side="right" onDelta={nudgeRight} />}
+      <div className="order-5 min-w-0 shrink-0" style={{ width: rightW, display: rightOpen ? undefined : "none" }}>
+        <RightPanel width={rightW} onToggle={() => updateLayout({ rightOpen: false })} />
+      </div>
     </div>
   );
 }

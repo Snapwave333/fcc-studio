@@ -1,12 +1,12 @@
 use serde::Serialize;
 use serde_json::json;
-use std::os::windows::process::CommandExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::Emitter;
 
 use crate::db::Db;
+use crate::proc;
 
 const OLLAMA_URL: &str = "http://127.0.0.1:11434";
 const PROXY_PORT: u16 = 8082;
@@ -55,7 +55,6 @@ fn fcc_admin_apply(values: &serde_json::Value) -> Result<serde_json::Value, Stri
     )
 }
 
-/// Recursively find the field descriptor with key == wanted_key and return its "value".
 fn find_field_value(node: &serde_json::Value, wanted_key: &str) -> Option<serde_json::Value> {
     match node {
         serde_json::Value::Object(map) => {
@@ -212,125 +211,219 @@ fn lmstudio_up() -> bool {
     .is_ok()
 }
 
-fn hardware() -> Option<Hardware> {
-    let out = std::process::Command::new("powershell")
+fn nvidia_gpu() -> Option<(String, f64, f64)> {
+    let out = proc::command("nvidia-smi")
+        .args(["--query-gpu=name,memory.total,memory.used", "--format=csv,noheader,nounits"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_nvidia_line(String::from_utf8_lossy(&out.stdout).lines().next()?)
+}
+
+pub fn parse_nvidia_line(line: &str) -> Option<(String, f64, f64)> {
+    let parts: Vec<&str> = line.split(',').map(str::trim).collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    Some((
+        parts[0].to_string(),
+        parts[1].parse::<f64>().ok()? / 1024.0,
+        parts[2].parse::<f64>().ok()? / 1024.0,
+    ))
+}
+
+fn round1(v: f64) -> f64 {
+    (v * 10.0).round() / 10.0
+}
+
+#[cfg(windows)]
+fn memory_and_disk() -> (f64, f64, f64) {
+    let out = proc::command("powershell")
         .args([
             "-NoProfile",
             "-Command",
-            "$os = Get-CimInstance Win32_OperatingSystem; \
-             $d = Get-PSDrive C; \
-             \"RAM {0} {1}\" -f [math]::Round($os.TotalVisibleMemorySize/1MB,1), [math]::Round($os.FreePhysicalMemory/1MB,1); \
-             \"DISK {0}\" -f [math]::Round($d.Free/1GB,1); \
-             $g = & nvidia-smi --query-gpu=name,memory.total,memory.used --format=csv,noheader,nounits 2>$null; \
-             if ($g) { \"GPU $g\" } else { \"GPU none\" }",
+            "$os = Get-CimInstance Win32_OperatingSystem; $d = Get-PSDrive ($env:SystemDrive.TrimEnd(':')); \
+             \"{0} {1} {2}\" -f ($os.TotalVisibleMemorySize/1MB), ($os.FreePhysicalMemory/1MB), ($d.Free/1GB)",
         ])
-        .creation_flags(0x0800_0000)
+        .output();
+    let text = out.map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+    let nums: Vec<f64> = text
+        .split_whitespace()
+        .filter_map(|v| v.replace(',', ".").parse().ok())
+        .collect();
+    (
+        nums.first().copied().unwrap_or(0.0),
+        nums.get(1).copied().unwrap_or(0.0),
+        nums.get(2).copied().unwrap_or(0.0),
+    )
+}
+
+#[cfg(not(windows))]
+fn memory_and_disk() -> (f64, f64, f64) {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+    let field = |name: &str| -> f64 {
+        meminfo
+            .lines()
+            .find(|l| l.starts_with(name))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(|kb| kb / 1_048_576.0)
+            .unwrap_or(0.0)
+    };
+    let disk = proc::command("df")
+        .args(["-Pk", "/"])
         .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&out.stdout).to_string();
-    let mut ram_total = 0.0;
-    let mut ram_free = 0.0;
-    let mut disk_free = 0.0;
-    let mut gpu = String::from("none");
-    let mut vram_total = 0.0;
-    let mut vram_used = 0.0;
-    for line in text.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("RAM ") {
-            let parts: Vec<&str> = rest.split_whitespace().collect();
-            if parts.len() >= 2 {
-                ram_total = parts[0].parse().unwrap_or(0.0);
-                ram_free = parts[1].parse().unwrap_or(0.0);
-            }
-        } else if let Some(rest) = line.strip_prefix("DISK ") {
-            disk_free = rest.trim().parse().unwrap_or(0.0);
-        } else if let Some(rest) = line.strip_prefix("GPU ") {
-            let parts: Vec<&str> = rest.split(',').map(|s| s.trim()).collect();
-            if parts.len() >= 3 {
-                gpu = parts[0].to_string();
-                vram_total = parts[1].parse::<f64>().unwrap_or(0.0) / 1024.0;
-                vram_used = parts[2].parse::<f64>().unwrap_or(0.0) / 1024.0;
-            }
-        }
-    }
+        .ok()
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .nth(1)
+                .and_then(|l| l.split_whitespace().nth(3).map(String::from))
+        })
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|kb| kb / 1_048_576.0)
+        .unwrap_or(0.0);
+    (field("MemTotal:"), field("MemAvailable:"), disk)
+}
+
+fn hardware() -> Option<Hardware> {
+    let (ram_total, ram_free, disk_free) = memory_and_disk();
+    let (gpu, vram_total, vram_used) = nvidia_gpu().unwrap_or_else(|| ("none".to_string(), 0.0, 0.0));
     Some(Hardware {
         gpu,
-        vram_total_gb: (vram_total * 10.0).round() / 10.0,
-        vram_used_gb: (vram_used * 10.0).round() / 10.0,
-        ram_total_gb: ram_total,
-        ram_free_gb: ram_free,
-        disk_free_gb: disk_free,
+        vram_total_gb: round1(vram_total),
+        vram_used_gb: round1(vram_used),
+        ram_total_gb: round1(ram_total),
+        ram_free_gb: round1(ram_free),
+        disk_free_gb: round1(disk_free),
     })
 }
 
 #[tauri::command]
-pub fn redline_status(state: tauri::State<RedlineState>) -> Result<RedlineStatus, String> {
-    let (ollama_up, models) = ollama_models();
-    let proxy_model = current_model_ref().ok().flatten();
-    Ok(RedlineStatus {
-        proxy_up: fcc_admin_get("/health").is_ok(),
-        proxy_model,
-        redline_active: state.active_model.lock().map_err(|e| e.to_string())?.is_some(),
-        redline_model: state.active_model.lock().map_err(|e| e.to_string())?.clone(),
-        ollama_up,
-        lmstudio_up: lmstudio_up(),
-        models,
-        hardware: hardware(),
+pub async fn redline_status(state: tauri::State<'_, RedlineState>) -> Result<RedlineStatus, String> {
+    let active = state.active_model.lock().map_err(|e| e.to_string())?.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let models_thread = std::thread::spawn(ollama_models);
+        let hw_thread = std::thread::spawn(hardware);
+        let proxy_up = fcc_admin_get("/health").is_ok();
+        let proxy_model = if proxy_up { current_model_ref().ok().flatten() } else { None };
+        let lmstudio = lmstudio_up();
+        let (ollama_up, models) = models_thread.join().unwrap_or((false, Vec::new()));
+        RedlineStatus {
+            proxy_up,
+            proxy_model,
+            redline_active: active.is_some(),
+            redline_model: active,
+            ollama_up,
+            lmstudio_up: lmstudio,
+            models,
+            hardware: hw_thread.join().ok().flatten(),
+        }
     })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn redline_activate(state: tauri::State<RedlineState>, db: tauri::State<Db>, model: String) -> Result<(), String> {
-    let backup = json!({
-        "model": current_model_ref()?,
-        "fallbacks": current_fallbacks()?,
-    });
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT INTO kv(key, value) VALUES('redline.backup', ?1) ON CONFLICT(key) DO UPDATE SET value=?1",
-        rusqlite::params![backup.to_string()],
-    )
-    .map_err(|e| e.to_string())?;
-    drop(conn);
-
-    // ACTIVE mode: local-only. Point MODEL at ollama and clear cloud fallbacks.
-    fcc_admin_apply(&json!({
-        "MODEL": format!("ollama/{model}"),
-        "MODEL_FALLBACKS": "",
-    }))?;
-
+pub async fn redline_activate(
+    state: tauri::State<'_, RedlineState>,
+    db: tauri::State<'_, Db>,
+    model: String,
+) -> Result<(), String> {
+    let db = db.inner().clone();
+    let chosen = model.clone();
+    proc::blocking(move || {
+        let backup = json!({
+            "model": current_model_ref()?,
+            "fallbacks": current_fallbacks()?,
+        });
+        {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            let existing: Option<String> = conn
+                .query_row("SELECT value FROM kv WHERE key='redline.backup'", [], |r| r.get(0))
+                .ok();
+            if existing.is_none() {
+                conn.execute(
+                    "INSERT INTO kv(key, value) VALUES('redline.backup', ?1) ON CONFLICT(key) DO UPDATE SET value=?1",
+                    rusqlite::params![backup.to_string()],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            conn.execute(
+                "INSERT INTO kv(key, value) VALUES('redline.model', ?1) ON CONFLICT(key) DO UPDATE SET value=?1",
+                rusqlite::params![chosen],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        fcc_admin_apply(&json!({
+            "MODEL": format!("ollama/{chosen}"),
+            "MODEL_FALLBACKS": "",
+        }))
+        .map(|_| ())
+    })
+    .await?;
     *state.active_model.lock().map_err(|e| e.to_string())? = Some(model);
     Ok(())
 }
 
 #[tauri::command]
-pub fn redline_deactivate(state: tauri::State<RedlineState>, db: tauri::State<Db>) -> Result<(), String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    let backup: Option<String> = conn
-        .query_row("SELECT value FROM kv WHERE key='redline.backup'", [], |r| r.get(0))
-        .ok();
-    drop(conn);
-    if let Some(raw) = backup {
-        if let Ok(backup) = serde_json::from_str::<serde_json::Value>(&raw) {
-            let mut values = serde_json::Map::new();
-            values.insert(
-                "MODEL".into(),
-                backup.get("model").cloned().unwrap_or(serde_json::Value::Null),
-            );
-            values.insert(
-                "MODEL_FALLBACKS".into(),
-                backup.get("fallbacks").cloned().unwrap_or(serde_json::Value::Null),
-            );
-            let _ = fcc_admin_apply(&serde_json::Value::Object(values));
-        }
-    }
+pub async fn redline_deactivate(state: tauri::State<'_, RedlineState>, db: tauri::State<'_, Db>) -> Result<(), String> {
+    let db = db.inner().clone();
+    proc::blocking(move || {
+        let backup: Option<String> = {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            conn.query_row("SELECT value FROM kv WHERE key='redline.backup'", [], |r| r.get(0))
+                .ok()
+        };
+        let Some(raw) = backup else { return Ok(()) };
+        let backup = serde_json::from_str::<serde_json::Value>(&raw).map_err(|e| e.to_string())?;
+        let mut values = serde_json::Map::new();
+        values.insert("MODEL".into(), backup.get("model").cloned().unwrap_or(serde_json::Value::Null));
+        values.insert(
+            "MODEL_FALLBACKS".into(),
+            backup.get("fallbacks").cloned().unwrap_or(serde_json::Value::Null),
+        );
+        fcc_admin_apply(&serde_json::Value::Object(values))?;
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM kv WHERE key='redline.backup'", [])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await?;
     *state.active_model.lock().map_err(|e| e.to_string())? = None;
     Ok(())
 }
 
+pub fn restore_active_model(state: &RedlineState, db: &Db) {
+    let Ok(conn) = db.0.lock() else { return };
+    let has_backup: bool = conn
+        .query_row("SELECT 1 FROM kv WHERE key='redline.backup'", [], |_| Ok(()))
+        .is_ok();
+    let level: Option<String> = conn
+        .query_row("SELECT value FROM kv WHERE key='autonomy.level'", [], |r| r.get(0))
+        .ok();
+    let model: Option<String> = conn
+        .query_row("SELECT value FROM kv WHERE key='redline.model'", [], |r| r.get(0))
+        .ok();
+    if has_backup && level.as_deref() == Some("redline") {
+        if let (Some(m), Ok(mut active)) = (model, state.active_model.lock()) {
+            *active = Some(m);
+        }
+    }
+}
+
+#[cfg(not(windows))]
 #[tauri::command]
 pub fn redline_install_ollama() -> Result<(), String> {
-    std::process::Command::new("winget")
+    proc::open_url("https://ollama.com/download").map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+#[tauri::command]
+pub fn redline_install_ollama() -> Result<(), String> {
+    proc::command("winget")
         .args([
             "install",
             "--id",
@@ -339,20 +432,25 @@ pub fn redline_install_ollama() -> Result<(), String> {
             "--accept-source-agreements",
             "--accept-package-agreements",
         ])
-        .creation_flags(0x0800_0000)
         .spawn()
         .map_err(|e| format!("could not launch winget: {e} (is winget installed?)"))?;
     Ok(())
 }
 
-fn record_benchmark(db: &Db, model: &str, task: &str, score: f64, latency_ms: u64, tokens: u64, detail: &str) {
-    let conn = match db.0.lock() {
-        Ok(c) => c,
-        Err(_) => return,
-    };
+fn record_benchmark(db: &Db, model: &str, r: &TaskResult) {
+    let Ok(conn) = db.0.lock() else { return };
     let _ = conn.execute(
-        "INSERT INTO benchmarks(model, task, score, latency_ms, tokens, detail, created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-        rusqlite::params![model, task, score, latency_ms as i64, tokens as i64, detail, chrono::Utc::now().to_rfc3339()],
+        "INSERT INTO benchmarks(model, task, score, max_score, latency_ms, tokens, detail, created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+        rusqlite::params![
+            model,
+            r.task,
+            r.score,
+            r.max,
+            r.latency_ms as i64,
+            r.tokens as i64,
+            format!("score {}/{} - {}", r.score, r.max, r.detail),
+            chrono::Utc::now().to_rfc3339()
+        ],
     );
 }
 
@@ -414,7 +512,7 @@ fn run_task_strict_json(model: &str) -> TaskResult {
                 max: 25.0,
                 latency_ms: latency,
                 tokens,
-                detail: if ok { "valid structured tool call".into() } else { format!("got: {}", &content.chars().take(160).collect::<String>()) },
+                detail: if ok { "valid structured tool call".into() } else { format!("got: {}", content.chars().take(160).collect::<String>()) },
             }
         }
         Err(e) => TaskResult { task: "strict_json_tool_call", score: 0.0, max: 25.0, latency_ms: 0, tokens: 0, detail: e },
@@ -425,28 +523,25 @@ fn run_task_code_fix(model: &str) -> TaskResult {
     let prompt = "Fix this JavaScript function so it returns the sum of squares of 1..n inclusive. Return ONLY the corrected function, no markdown.\n\nfunction sumSquares(n) {\n  let s = 0;\n  for (let i = 1; i < n; i++) s += i * i;\n  return s;\n}";
     match ollama_chat(model, prompt, 120) {
         Ok((content, latency, tokens)) => {
-            let code = content
-                .replace("```javascript", "")
-                .replace("```js", "")
-                .replace("```", "");
+            let code = strip_code_fences(&content);
             let test_src = format!(
                 "{}\n\nconst assert = require('assert');\ntry {{ assert.strictEqual(sumSquares(3), 14); assert.strictEqual(sumSquares(1), 1); console.log('PASS'); }} catch (e) {{ console.log('FAIL ' + e.message); }}",
                 code
             );
-            let dir = std::env::temp_dir().join(format!("fcc-bench-{}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("fcc-bench-{}", uuid::Uuid::new_v4()));
             let _ = std::fs::create_dir_all(&dir);
             let file = dir.join("test.js");
             let pass = std::fs::write(&file, test_src)
                 .ok()
                 .and_then(|_| {
-                    std::process::Command::new("node")
+                    proc::command("node")
                         .arg(&file)
-                        .creation_flags(0x0800_0000)
                         .output()
                         .ok()
                 })
                 .map(|o| String::from_utf8_lossy(&o.stdout).contains("PASS"))
                 .unwrap_or(false);
+            let _ = std::fs::remove_dir_all(&dir);
             TaskResult {
                 task: "code_fix_and_verify",
                 score: if pass { 30.0 } else { 0.0 },
@@ -458,6 +553,18 @@ fn run_task_code_fix(model: &str) -> TaskResult {
         }
         Err(e) => TaskResult { task: "code_fix_and_verify", score: 0.0, max: 30.0, latency_ms: 0, tokens: 0, detail: e },
     }
+}
+
+pub fn strip_code_fences(content: &str) -> String {
+    let trimmed = content.trim();
+    if let Some(start) = trimmed.find("```") {
+        let after = &trimmed[start + 3..];
+        let body_start = after.find('\n').map(|i| i + 1).unwrap_or(0);
+        let body = &after[body_start..];
+        let end = body.find("```").unwrap_or(body.len());
+        return body[..end].trim().to_string();
+    }
+    trimmed.to_string()
 }
 
 fn run_task_instruction(model: &str) -> TaskResult {
@@ -503,51 +610,78 @@ struct BenchProgress {
     model: String,
     task: String,
     done: bool,
+    finished: bool,
+    index: usize,
+    total: usize,
     score: f64,
     max: f64,
     latency_ms: u64,
     detail: String,
 }
 
+type BenchTask = (&'static str, fn(&str) -> TaskResult);
+
+const BENCH_TASKS: [BenchTask; 4] = [
+    ("strict_json_tool_call", run_task_strict_json),
+    ("code_fix_and_verify", run_task_code_fix),
+    ("instruction_adherence", run_task_instruction),
+    ("repo_bug_analysis", run_task_repo_analysis),
+];
+
 #[tauri::command]
-pub fn redline_benchmark_start(
+pub async fn redline_benchmark_start(
     app: tauri::AppHandle,
-    db: tauri::State<Db>,
+    db: tauri::State<'_, Db>,
     model: String,
 ) -> Result<(), String> {
     if BENCH_RUNNING.swap(true, Ordering::SeqCst) {
         return Err("a benchmark is already running".into());
     }
-    let (ollama_up, models) = ollama_models();
-    if !ollama_up || !models.iter().any(|m| m.name == model) {
+    let wanted = model.clone();
+    let available = proc::blocking(move || {
+        let tags = http_get(&format!("{OLLAMA_URL}/api/tags"), 4)?;
+        Ok(tags
+            .get("models")
+            .and_then(|m| m.as_array())
+            .map(|list| list.iter().any(|m| m.get("name").and_then(|n| n.as_str()) == Some(wanted.as_str())))
+            .unwrap_or(false))
+    })
+    .await
+    .unwrap_or(false);
+    if !available {
         BENCH_RUNNING.store(false, Ordering::SeqCst);
         return Err(format!("model '{model}' is not available in the local engine"));
     }
     let db_inner = db.inner().clone();
     std::thread::spawn(move || {
-        let db = db_inner;
-        let results = vec![
-            run_task_strict_json(&model),
-            run_task_code_fix(&model),
-            run_task_instruction(&model),
-            run_task_repo_analysis(&model),
-        ];
-        for r in &results {
-            record_benchmark(
-                &db,
-                &model,
-                r.task,
-                r.score,
-                r.latency_ms,
-                r.tokens,
-                &format!("score {}/{} — {}", r.score, r.max, r.detail),
+        let total = BENCH_TASKS.len();
+        for (index, (name, run)) in BENCH_TASKS.iter().enumerate() {
+            let _ = app.emit(
+                "redline-bench",
+                BenchProgress {
+                    model: model.clone(),
+                    task: name.to_string(),
+                    done: false,
+                    finished: false,
+                    index,
+                    total,
+                    score: 0.0,
+                    max: 0.0,
+                    latency_ms: 0,
+                    detail: "running".into(),
+                },
             );
+            let r = run(&model);
+            record_benchmark(&db_inner, &model, &r);
             let _ = app.emit(
                 "redline-bench",
                 BenchProgress {
                     model: model.clone(),
                     task: r.task.to_string(),
                     done: true,
+                    finished: index + 1 == total,
+                    index,
+                    total,
                     score: r.score,
                     max: r.max,
                     latency_ms: r.latency_ms,
@@ -564,6 +698,7 @@ pub fn redline_benchmark_start(
 pub struct LeaderboardRow {
     pub model: String,
     pub avg_score: f64,
+    pub score_pct: f64,
     pub tasks_run: i64,
     pub avg_latency_ms: i64,
     pub last_run: String,
@@ -574,8 +709,9 @@ pub fn redline_leaderboard(db: tauri::State<Db>) -> Result<Vec<LeaderboardRow>, 
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT model, AVG(score), COUNT(*), AVG(latency_ms), MAX(created_at) \
-             FROM benchmarks GROUP BY model ORDER BY AVG(score) DESC",
+            "SELECT model, AVG(score), COUNT(*), AVG(latency_ms), MAX(created_at), \
+             CASE WHEN SUM(max_score) > 0 THEN 100.0 * SUM(score) / SUM(max_score) ELSE 0 END AS pct \
+             FROM benchmarks GROUP BY model ORDER BY pct DESC, AVG(latency_ms) ASC",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -586,6 +722,7 @@ pub fn redline_leaderboard(db: tauri::State<Db>) -> Result<Vec<LeaderboardRow>, 
                 tasks_run: r.get(2)?,
                 avg_latency_ms: r.get::<_, f64>(3)? as i64,
                 last_run: r.get(4)?,
+                score_pct: (r.get::<_, f64>(5)? * 10.0).round() / 10.0,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -599,4 +736,46 @@ pub fn redline_leaderboard(db: tauri::State<Db>) -> Result<Vec<LeaderboardRow>, 
 #[tauri::command]
 pub fn redline_bench_running() -> Result<bool, String> {
     Ok(BENCH_RUNNING.load(Ordering::SeqCst))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_nested_config_values() {
+        let cfg = json!({"sections": [{"fields": [{"key": "MODEL", "value": "a/b"}, {"key": "MODEL_FALLBACKS", "value": null}]}]});
+        assert_eq!(find_field_value(&cfg, "MODEL"), Some(json!("a/b")));
+        assert_eq!(find_field_value(&cfg, "MODEL_FALLBACKS"), Some(serde_json::Value::Null));
+        assert_eq!(find_field_value(&cfg, "MISSING"), None);
+    }
+
+    #[test]
+    fn strips_markdown_fences() {
+        assert_eq!(strip_code_fences("```js\nfunction f(){}\n```"), "function f(){}");
+        assert_eq!(strip_code_fences("Here:\n```\nx\n```\nthanks"), "x");
+        assert_eq!(strip_code_fences("plain"), "plain");
+    }
+
+    #[test]
+    fn parses_nvidia_smi_output() {
+        let (name, total, used) = parse_nvidia_line("NVIDIA GeForce RTX 4090, 24564, 1024").unwrap();
+        assert_eq!(name, "NVIDIA GeForce RTX 4090");
+        assert!((total - 23.98).abs() < 0.01);
+        assert!((used - 1.0).abs() < 0.01);
+        assert!(parse_nvidia_line("garbage").is_none());
+    }
+
+    #[test]
+    fn urlencodes_model_names() {
+        assert_eq!(urlencode("qwen2.5-coder:7b"), "qwen2.5-coder%3A7b");
+    }
+
+    #[test]
+    fn hardware_probe_returns_real_memory() {
+        let hw = hardware().unwrap();
+        if cfg!(target_os = "linux") {
+            assert!(hw.ram_total_gb > 0.0);
+        }
+    }
 }

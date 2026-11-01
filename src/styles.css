@@ -16,6 +16,10 @@
   --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
 }
 
+html {
+  color-scheme: dark;
+}
+
 html,
 body,
 #root {
@@ -43,6 +47,7 @@ body,
   background: #3a3a48;
 }
 
+@layer components {
 .btn {
   display: inline-flex;
   align-items: center;
@@ -110,4 +115,20 @@ body,
   background: #0c0c10;
   padding: 1px 5px;
   border-radius: 4px;
+}
+
+.btn:disabled,
+.btn[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+.btn:focus-visible,
+.input:focus-visible {
+  outline: 2px solid var(--color-fuchsia);
+  outline-offset: 1px;
+}
+.xterm {
+  height: 100%;
+}
 }

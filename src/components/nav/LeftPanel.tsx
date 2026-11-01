@@ -25,6 +25,7 @@ function TreeNode({ entry, depth }: { entry: FsEntry; depth: number }) {
   const activeProject = useApp((s) => s.activeProject());
   const showToast = useApp((s) => s.showToast);
   const fileTreeVersion = useApp((s) => s.fileTreeVersion);
+  const activeFile = useApp((s) => s.activeFile);
 
   const load = async () => {
     if (!activeProject) return;
@@ -38,7 +39,6 @@ function TreeNode({ entry, depth }: { entry: FsEntry; depth: number }) {
 
   useEffect(() => {
     if (expanded) load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expanded, fileTreeVersion]);
 
   const del = async () => {
@@ -48,8 +48,8 @@ function TreeNode({ entry, depth }: { entry: FsEntry; depth: number }) {
   };
 
   const rename = async () => {
-    const name = prompt("New name", entry.name);
-    if (!name) return;
+    const name = prompt("New name", entry.name)?.trim();
+    if (!name || name === entry.name || /[\\/]/.test(name)) return;
     const to = entry.path.slice(0, entry.path.length - entry.name.length) + name;
     await api.renamePath(entry.path, to).catch((e) => showToast(String(e)));
     bumpTree();
@@ -58,8 +58,11 @@ function TreeNode({ entry, depth }: { entry: FsEntry; depth: number }) {
   return (
     <div>
       <div
-        className="flex cursor-pointer items-center gap-1 rounded px-1 py-[3px] hover:bg-elev"
+        className={`group flex cursor-pointer items-center gap-1 rounded px-1 py-[3px] hover:bg-elev ${
+          activeFile === entry.path ? "bg-elev" : ""
+        }`}
         style={{ paddingLeft: 4 + depth * 12 }}
+        title={entry.path}
         onClick={() => {
           if (entry.is_dir) setExpanded((v) => !v);
           else openFile(entry.path);
@@ -74,10 +77,12 @@ function TreeNode({ entry, depth }: { entry: FsEntry; depth: number }) {
         ) : (
           <FileIcon size={13} className="shrink-0 text-muted" />
         )}
+        {entry.is_dir && <Folder size={12} className="shrink-0 text-fuchsia2/70" />}
         <span className="truncate text-[12.5px] text-text2">{entry.name}</span>
         <span className="ml-auto hidden gap-1 group-hover:flex">
           <button
             className="text-muted hover:text-text"
+            title="Rename"
             onClick={(e) => {
               e.stopPropagation();
               rename();
@@ -87,6 +92,7 @@ function TreeNode({ entry, depth }: { entry: FsEntry; depth: number }) {
           </button>
           <button
             className="text-muted hover:text-err"
+            title="Delete"
             onClick={(e) => {
               e.stopPropagation();
               del();
@@ -97,7 +103,7 @@ function TreeNode({ entry, depth }: { entry: FsEntry; depth: number }) {
         </span>
       </div>
       {entry.is_dir && expanded && children && (
-        <div className="group">
+        <div>
           {children.map((c) => (
             <TreeNode key={c.path} entry={c} depth={depth + 1} />
           ))}
@@ -117,6 +123,7 @@ export default function LeftPanel({ width, onToggle }: { width: number; onToggle
   const bumpTree = useApp((s) => s.bumpTree);
   const fileTreeVersion = useApp((s) => s.fileTreeVersion);
   const openFile = useApp((s) => s.openFile);
+  const removeProject = useApp((s) => s.removeProject);
 
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
@@ -169,13 +176,20 @@ export default function LeftPanel({ width, onToggle }: { width: number; onToggle
   };
 
   useEffect(() => {
-    if (activeProject) {
-      api
-        .listDir(activeProject.root, "")
-        .then(setRootEntries)
-        .catch(() => setRootEntries([]));
+    if (!activeProject) {
+      setRootEntries([]);
+      return;
     }
-  }, [activeProject, fileTreeVersion]);
+    api
+      .listDir(activeProject.root, "")
+      .then(setRootEntries)
+      .catch(() => setRootEntries([]));
+  }, [activeProject?.root, fileTreeVersion]);
+
+  useEffect(() => {
+    setQuery("");
+    setHits(null);
+  }, [activeProject?.id]);
 
   const doSearch = useMemo(
     () =>
@@ -190,7 +204,7 @@ export default function LeftPanel({ width, onToggle }: { width: number; onToggle
           setHits([]);
         }
       }, 350),
-    [activeProject]
+    [activeProject?.root]
   );
 
   const createProject = async () => {
@@ -239,7 +253,19 @@ export default function LeftPanel({ width, onToggle }: { width: number; onToggle
         <button className="btn btn-ghost px-1.5" title="Open folder / New project" onClick={startNewProject}>
           +
         </button>
-        <button className="btn btn-ghost px-1.5" title="Hide panel" onClick={onToggle}>
+        {activeProject && (
+          <button
+            className="btn btn-ghost px-1.5 hover:text-err"
+            title="Remove project from Serenity (files on disk are kept)"
+            onClick={async () => {
+              if (!confirm(`Remove "${activeProject.name}" from Serenity? Chat history and project memory are deleted; files on disk are kept.`)) return;
+              await removeProject(activeProject.id).catch((e) => showToast(String(e)));
+            }}
+          >
+            <Trash2 size={13} />
+          </button>
+        )}
+        <button className="btn btn-ghost px-1.5" title="Hide panel (Ctrl+B)" onClick={onToggle}>
           <PanelLeftClose size={14} />
         </button>
       </div>
@@ -287,9 +313,13 @@ export default function LeftPanel({ width, onToggle }: { width: number; onToggle
                   key={i}
                   className="block w-full truncate px-2 py-1 text-left text-[11.5px] text-text2 hover:bg-elev"
                   onClick={() => openFile(h.path)}
-                  title={`${h.path}:${h.line}`}
+                  title={h.line > 0 ? `${h.path}:${h.line}` : h.path}
                 >
-                  <span className="text-fuchsia2">{h.path.split(/[\\/]/).pop()}:{h.line}</span> {h.text}
+                  <span className="text-fuchsia2">
+                    {h.path.split(/[\\/]/).pop()}
+                    {h.line > 0 ? `:${h.line}` : ""}
+                  </span>{" "}
+                  {h.line > 0 ? h.text.trim() : <span className="text-muted">{h.path.slice(activeProject.root.length + 1)}</span>}
                 </button>
               ))}
             </div>

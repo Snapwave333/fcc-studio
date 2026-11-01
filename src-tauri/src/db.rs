@@ -92,12 +92,43 @@ impl Db {
             "#,
         )
         .map_err(|e| e.to_string())?;
+        migrate(&conn)?;
         Ok(Db(Arc::new(Mutex::new(conn))))
     }
 
     fn now() -> String {
         chrono::Utc::now().to_rfc3339()
     }
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
+    conn.prepare(&format!("PRAGMA table_info({table})"))
+        .and_then(|mut stmt| {
+            let names: Vec<String> = stmt
+                .query_map([], |r| r.get::<_, String>(1))?
+                .filter_map(Result::ok)
+                .collect();
+            Ok(names.iter().any(|n| n == column))
+        })
+        .unwrap_or(false)
+}
+
+fn migrate(conn: &Connection) -> Result<(), String> {
+    if !column_exists(conn, "benchmarks", "max_score") {
+        conn.execute_batch(
+            "ALTER TABLE benchmarks ADD COLUMN max_score REAL NOT NULL DEFAULT 0;
+             UPDATE benchmarks SET max_score = CASE task
+                WHEN 'strict_json_tool_call' THEN 25
+                WHEN 'code_fix_and_verify' THEN 30
+                WHEN 'instruction_adherence' THEN 20
+                WHEN 'repo_bug_analysis' THEN 25
+                ELSE 0 END;",
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(project_id, session_id, created_at);")
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn row_to_project(row: &rusqlite::Row) -> rusqlite::Result<Project> {
@@ -144,15 +175,16 @@ pub fn create_project(
     let now = Db::now();
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT INTO projects(id, name, root, instructions, preview_url, layout, created_at, updated_at) VALUES(?1,?2,?3,?4,'','','','') ",
-        params![id, name, root, instructions],
+        "INSERT INTO projects(id, name, root, instructions, preview_url, layout, created_at, updated_at) VALUES(?1,?2,?3,?4,'','',?5,?5)",
+        params![id, name, root, instructions, now],
     )
-    .map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE projects SET created_at=?2, updated_at=?2 WHERE id=?1",
-        params![id, now],
-    )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| {
+        if e.to_string().contains("UNIQUE") {
+            "a project for this folder already exists".to_string()
+        } else {
+            e.to_string()
+        }
+    })?;
     Ok(Project {
         id,
         name,
@@ -201,12 +233,15 @@ pub fn update_project(
 
 #[tauri::command]
 pub fn delete_project(db: tauri::State<Db>, id: String) -> Result<(), String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM projects WHERE id=?1", params![id])
+    let mut conn = db.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM messages WHERE project_id=?1", params![id])
         .map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM messages WHERE project_id=?1", params![id])
+    tx.execute("DELETE FROM memory WHERE scope=?1", params![id])
         .map_err(|e| e.to_string())?;
-    Ok(())
+    tx.execute("DELETE FROM projects WHERE id=?1", params![id])
+        .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -229,13 +264,25 @@ pub fn add_message(
 }
 
 #[tauri::command]
-pub fn list_messages(db: tauri::State<Db>, project_id: String) -> Result<Vec<StoredMessage>, String> {
+pub fn list_messages(
+    db: tauri::State<Db>,
+    project_id: String,
+    session_id: Option<String>,
+    limit: Option<u32>,
+) -> Result<Vec<StoredMessage>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let limit = limit.unwrap_or(500).min(5000) as i64;
+    let session = session_id.filter(|s| !s.is_empty());
     let mut stmt = conn
-        .prepare("SELECT id, project_id, session_id, role, content, meta, created_at FROM messages WHERE project_id=?1 ORDER BY created_at ASC")
+        .prepare(
+            "SELECT id, project_id, session_id, role, content, meta, created_at FROM (\
+               SELECT * FROM messages WHERE project_id=?1 AND (?2 IS NULL OR session_id=?2) \
+               ORDER BY created_at DESC LIMIT ?3\
+             ) ORDER BY created_at ASC",
+        )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![project_id], |row| {
+        .query_map(params![project_id, session, limit], |row| {
             Ok(StoredMessage {
                 id: row.get(0)?,
                 project_id: row.get(1)?,
@@ -334,6 +381,56 @@ pub fn memory_delete(db: tauri::State<Db>, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn update_message_session(db: tauri::State<Db>, project_id: String, session_id: String) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE messages SET session_id=?2 WHERE project_id=?1 AND session_id=''",
+        params![project_id, session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionSummary {
+    pub session_id: String,
+    pub first_prompt: String,
+    pub messages: i64,
+    pub started_at: String,
+    pub last_at: String,
+}
+
+#[tauri::command]
+pub fn list_sessions(db: tauri::State<Db>, project_id: String) -> Result<Vec<SessionSummary>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT m.session_id, COUNT(*), MIN(m.created_at), MAX(m.created_at), \
+               COALESCE((SELECT f.content FROM messages f WHERE f.project_id=m.project_id AND f.session_id=m.session_id AND f.role='user' ORDER BY f.created_at ASC LIMIT 1), '') \
+             FROM messages m WHERE m.project_id=?1 AND m.session_id<>'' \
+             GROUP BY m.session_id ORDER BY MAX(m.created_at) DESC LIMIT 50",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![project_id], |r| {
+            let prompt: String = r.get(4)?;
+            Ok(SessionSummary {
+                session_id: r.get(0)?,
+                messages: r.get(1)?,
+                started_at: r.get(2)?,
+                last_at: r.get(3)?,
+                first_prompt: prompt.chars().take(120).collect(),
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+#[tauri::command]
 pub fn kv_get(db: tauri::State<Db>, key: String) -> Result<Option<String>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let val: Option<String> = conn
@@ -352,4 +449,29 @@ pub fn kv_set(db: tauri::State<Db>, key: String, value: String) -> Result<(), St
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrates_legacy_benchmark_table() {
+        let path = std::env::temp_dir().join(format!("fcc-db-test-{}.db", uuid::Uuid::new_v4()));
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE benchmarks(id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT NOT NULL, task TEXT NOT NULL, score REAL NOT NULL, latency_ms INTEGER NOT NULL DEFAULT 0, tokens INTEGER NOT NULL DEFAULT 0, detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
+                 INSERT INTO benchmarks(model, task, score, created_at) VALUES('m', 'code_fix_and_verify', 30, 'now');",
+            )
+            .unwrap();
+        }
+        let db = Db::open(path.clone()).unwrap();
+        let conn = db.0.lock().unwrap();
+        let max: f64 = conn.query_row("SELECT max_score FROM benchmarks", [], |r| r.get(0)).unwrap();
+        assert_eq!(max, 30.0);
+        drop(conn);
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
 }

@@ -29,7 +29,8 @@ It combines an ultra-fast native desktop shell with autonomous agent workflows, 
 - **Embedded Web & Dev Server Preview:** Automatically scans and detects local dev server ports (Vite, Next.js, FastAPI, Flask) and renders live hot-reloaded previews directly in the studio side panel.
 - **PTY Terminal Multiplexer:** High-performance native pseudo-terminals backed by `portable-pty` and `@xterm/xterm` with automatic fit addon and clean ANSI rendering.
 - **Native Git Integration:** Full stage, unstage, discard, commit, diff, and branch management without leaving the workspace.
-- **Memory & Context Cache:** Local SQLite memory store (`fcc-studio.db`) for agent learnings, rules, preferences, and session persistence.
+- **Memory & Context Cache:** Local SQLite memory store (`fcc-studio.db`) for agent learnings, rules, preferences, and session persistence. Past agent sessions are listed in the history menu and resume with full context.
+- **Live Agent Transcript:** Streaming markdown replies with code blocks and tables, collapsible thinking, nested sub-agent tool calls, and per-run duration, turns, tokens and cost.
 - **Redline Engine & Local Models:** Built-in Ollama / local model management, benchmark suites, and leaderboard tracker.
 
 ---
@@ -63,6 +64,33 @@ npm run tauri build
 ```
 
 The resulting standalone executable will be located in `src-tauri/target/release/serenity.exe`.
+
+### Tests & Checks
+
+```bash
+npm run check
+```
+
+```bash
+npm run test:rust
+```
+
+`npm run check` type-checks the frontend and runs the Vitest suites (agent stream parser, markdown renderer, prompt builder). `npm run test:rust` runs the backend suite, including end-to-end runs of the agent launcher against a stub `fcc-claude`, the preview server over real HTTP, git against a real repository, and database migrations.
+
+### Platforms
+
+Windows is the primary target (NSIS installer, UAC elevation, `winget` Ollama install). The backend also builds and runs on Linux and macOS: shells, process control, hardware probing and "open in explorer" use the native equivalents there. On Linux install the WebKitGTK prerequisites from the [Tauri guide](https://tauri.app/start/prerequisites/).
+
+### Keyboard Shortcuts
+
+| Shortcut | Action |
+|---|---|
+| `Enter` / `Shift+Enter` | Send prompt / new line |
+| `↑` / `↓` in an empty prompt | Recall previous prompts |
+| `Esc` | Stop the running agent |
+| `Ctrl+L` | Focus the prompt |
+| `Ctrl+B` / `Ctrl+J` | Toggle left / right panel |
+| `Ctrl+S` | Save the file open in the editor |
 
 ---
 

@@ -4,6 +4,7 @@ mod elevation;
 mod fs_cmds;
 mod git;
 mod preview;
+mod proc;
 mod pty;
 mod redline;
 mod relay;
@@ -11,10 +12,18 @@ mod skills;
 
 use agent::AgentState;
 use db::Db;
+use fs_cmds::WatchState;
+use preview::PreviewState;
 use pty::PtyState;
 use redline::RedlineState;
-use preview::PreviewState;
 use tauri::Manager;
+
+fn shutdown(app: &tauri::AppHandle) {
+    app.state::<AgentState>().kill_all();
+    app.state::<PtyState>().kill_all();
+    app.state::<PreviewState>().shutdown();
+    app.state::<WatchState>().stop();
+}
 
 pub fn run() {
     tauri::Builder::default()
@@ -22,16 +31,19 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let database = Db::open(data_dir.join("fcc-studio.db"))?;
+            let redline_state = RedlineState::default();
+            redline::restore_active_model(&redline_state, &database);
             app.manage(database);
+            app.manage(redline_state);
             app.manage(AgentState::default());
             app.manage(PtyState::default());
             app.manage(PreviewState::default());
-            app.manage(RedlineState::default());
+            app.manage(WatchState::default());
             Ok(())
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
-                let _ = window;
+                shutdown(window.app_handle());
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -41,6 +53,8 @@ pub fn run() {
             db::delete_project,
             db::add_message,
             db::list_messages,
+            db::list_sessions,
+            db::update_message_session,
             db::memory_list,
             db::memory_save,
             db::memory_delete,
@@ -59,11 +73,14 @@ pub fn run() {
             agent::detect_environment,
             agent::start_agent_run,
             agent::cancel_agent_run,
+            agent::active_agent_runs,
             pty::pty_create,
             pty::pty_write,
             pty::pty_resize,
             pty::pty_kill,
             pty::pty_kill_all,
+            pty::pty_list,
+            pty::pty_default_shell,
             relay::relay_status,
             relay::open_external,
             preview::preview_start,
@@ -99,5 +116,5 @@ pub fn run() {
             elevation::audit_read,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running FCC Studio");
+        .expect("error while running Serenity");
 }
