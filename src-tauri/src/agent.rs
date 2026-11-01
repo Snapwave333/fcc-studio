@@ -115,6 +115,7 @@ pub async fn detect_environment() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn start_agent_run(
     app: tauri::AppHandle,
     state: tauri::State<AgentState>,
