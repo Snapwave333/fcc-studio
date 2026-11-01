@@ -1,87 +1,158 @@
-import { ToolActivity } from "../store/useApp";
+export interface ToolActivity {
+  id: string;
+  name: string;
+  input: any;
+  result?: string;
+  isError?: boolean;
+}
+
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant" | "system";
+  text: string;
+  tools: ToolActivity[];
+  streaming: boolean;
+  ts: number;
+  meta?: string;
+  thinking?: boolean;
+  error?: boolean;
+}
 
 export interface AgentEventState {
   sessionId: string;
-  toolMap: Record<string, ToolActivity>;
+  model: string;
+  committed: string;
+  partial: string;
 }
 
-export const emptyAgentEventState = (): AgentEventState => ({ sessionId: "", toolMap: {} });
+export const emptyAgentEventState = (): AgentEventState => ({
+  sessionId: "",
+  model: "",
+  committed: "",
+  partial: "",
+});
 
 export interface ProcessResult {
-  messages: any[];
+  messages: ChatMessage[];
   finished: boolean;
   evState: AgentEventState;
 }
 
-function blockText(content: any): string {
+export function joinText(a: string, b: string): string {
+  if (!a) return b;
+  if (!b) return a;
+  return a.replace(/\s+$/, "") + "\n\n" + b.replace(/^\s+/, "");
+}
+
+export function blockText(content: any): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
     return content
-      .filter((c: any) => c.type === "text")
-      .map((c: any) => c.text)
+      .filter((c: any) => c?.type === "text")
+      .map((c: any) => c.text ?? "")
       .join("\n");
   }
   return "";
 }
 
-export function processAgentEvent(evState: AgentEventState, event: any, messages: any[]): ProcessResult {
-  const msgs = [...messages];
+export function formatResultMeta(event: any, model: string): string {
+  const parts: string[] = [];
+  if (model) parts.push(model);
+  if (typeof event.num_turns === "number") parts.push(`${event.num_turns} turn${event.num_turns === 1 ? "" : "s"}`);
+  if (typeof event.duration_ms === "number") parts.push(`${(event.duration_ms / 1000).toFixed(1)}s`);
+  if (typeof event.total_cost_usd === "number" && event.total_cost_usd > 0) parts.push(`$${event.total_cost_usd.toFixed(4)}`);
+  const usage = event.usage;
+  if (usage && typeof usage.output_tokens === "number") {
+    const input = (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+    parts.push(`${input.toLocaleString()} in / ${usage.output_tokens.toLocaleString()} out`);
+  }
+  return parts.join(" · ");
+}
+
+export function processAgentEvent(evState: AgentEventState, event: any, messages: ChatMessage[]): ProcessResult {
+  const msgs = messages.slice();
   let finished = false;
-  const ev: AgentEventState = { sessionId: evState.sessionId, toolMap: { ...evState.toolMap } };
-  const last = msgs.length > 0 ? msgs[msgs.length - 1] : undefined;
+  const ev: AgentEventState = { ...evState };
+  const lastIdx = msgs.length - 1;
+  const last = lastIdx >= 0 ? msgs[lastIdx] : undefined;
+  const live = last && last.role === "assistant" && last.streaming ? last : undefined;
   const t = event?.type;
+
+  const render = (patch: Partial<ChatMessage>) => {
+    if (!live) return;
+    msgs[lastIdx] = { ...live, text: joinText(ev.committed, ev.partial), ...patch };
+  };
 
   if (t === "system" && event.subtype === "init") {
     if (event.session_id) ev.sessionId = event.session_id;
+    if (event.model) ev.model = event.model;
   } else if (t === "stream_event") {
     const e = event.event;
-    if (e?.type === "content_block_delta" && e.delta?.type === "text_delta" && last?.streaming) {
-      msgs[msgs.length - 1] = { ...last, text: (last.text ?? "") + (e.delta.text ?? "") };
+    if (e?.type === "message_start") {
+      ev.partial = "";
+    } else if (e?.type === "content_block_start" && e.content_block?.type === "thinking") {
+      render({ thinking: true });
+    } else if (e?.type === "content_block_delta") {
+      if (e.delta?.type === "text_delta") {
+        ev.partial += e.delta.text ?? "";
+        render({ thinking: false });
+      } else if (e.delta?.type === "thinking_delta") {
+        render({ thinking: true });
+      }
     }
   } else if (t === "assistant") {
     const blocks: any[] = event.message?.content ?? [];
-    if (last?.streaming) {
-      let text = last.text;
-      const tools: ToolActivity[] = [...last.tools];
+    const text = blocks
+      .filter((b) => b?.type === "text")
+      .map((b) => b.text ?? "")
+      .join("");
+    ev.committed = joinText(ev.committed, text);
+    ev.partial = "";
+    if (live) {
+      const tools = live.tools.slice();
       for (const b of blocks) {
-        if (b.type === "text") {
-          text += b.text ?? "";
-        } else if (b.type === "tool_use") {
-          const activity: ToolActivity = {
-            id: b.id ?? crypto.randomUUID(),
-            name: b.name ?? "tool",
-            input: b.input ?? {},
-          };
-          tools.push(activity);
-          ev.toolMap[activity.id] = activity;
-        } else if (b.type === "thinking") {
-          // thinking blocks are shown via activity log only
-        }
-      }
-      msgs[msgs.length - 1] = { ...last, text, tools };
-    }
-  } else if (t === "user") {
-    const blocks = event.message?.content;
-    if (Array.isArray(blocks) && last?.streaming) {
-      for (const b of blocks) {
-        if (b.type === "tool_result" && b.tool_use_id) {
-          const existing = ev.toolMap[b.tool_use_id];
-          if (existing) {
-            existing.result = blockText(b.content).slice(0, 4000);
-            existing.isError = !!b.is_error;
+        if (b?.type === "tool_use") {
+          const id = b.id ?? crypto.randomUUID();
+          if (!tools.some((x) => x.id === id)) {
+            tools.push({ id, name: b.name ?? "tool", input: b.input ?? {} });
           }
         }
       }
-      const tools = last.tools.map((tl: ToolActivity) => ev.toolMap[tl.id] ?? tl);
-      msgs[msgs.length - 1] = { ...last, tools };
+      render({ tools, thinking: false });
+    }
+  } else if (t === "user") {
+    const blocks = event.message?.content;
+    if (Array.isArray(blocks) && live) {
+      const results = new Map<string, { result: string; isError: boolean }>();
+      for (const b of blocks) {
+        if (b?.type === "tool_result" && b.tool_use_id) {
+          results.set(b.tool_use_id, { result: blockText(b.content).slice(0, 8000), isError: !!b.is_error });
+        }
+      }
+      if (results.size > 0) {
+        const tools = live.tools.map((tl) => (results.has(tl.id) ? { ...tl, ...results.get(tl.id)! } : tl));
+        render({ tools });
+      }
     }
   } else if (t === "result") {
     finished = true;
     if (event.session_id) ev.sessionId = event.session_id;
-    if (last?.streaming) {
-      const finalText = typeof event.result === "string" && event.result.length > 0 ? event.result : last.text;
-      msgs[msgs.length - 1] = { ...last, text: finalText, streaming: false };
+    if (live) {
+      const fallback = typeof event.result === "string" ? event.result : "";
+      const isError = !!event.is_error || (typeof event.subtype === "string" && event.subtype.startsWith("error"));
+      let text = joinText(ev.committed, ev.partial) || fallback;
+      if (isError && !text) text = `⚠ Run ended: ${event.subtype ?? "error"}`;
+      msgs[lastIdx] = {
+        ...live,
+        text,
+        streaming: false,
+        thinking: false,
+        error: isError,
+        meta: formatResultMeta(event, ev.model),
+      };
     }
+    ev.committed = "";
+    ev.partial = "";
   }
 
   return { messages: msgs, finished, evState: ev };

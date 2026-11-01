@@ -246,6 +246,7 @@ fn gpu_info() -> (String, f64, f64) {
     ("none".into(), 0.0, 0.0)
 }
 
+#[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(dead_code))]
 pub fn parse_meminfo(text: &str) -> (f64, f64) {
     let mut total = 0.0;
     let mut avail = 0.0;
@@ -262,6 +263,7 @@ pub fn parse_meminfo(text: &str) -> (f64, f64) {
     (total, avail)
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 pub fn parse_df(text: &str) -> f64 {
     text.lines()
         .nth(1)
@@ -271,6 +273,7 @@ pub fn parse_df(text: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 fn disk_free_unix() -> f64 {
     let target = platform::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
     platform::command("df")
@@ -566,6 +569,8 @@ fn ollama_chat(model: &str, prompt: &str, timeout: u64) -> Result<(String, u64, 
     Ok((content, latency, tokens))
 }
 
+type BenchTask = fn(&str) -> TaskResult;
+
 struct TaskResult {
     task: &'static str,
     score: f64,
@@ -598,7 +603,7 @@ fn run_task_strict_json(model: &str) -> TaskResult {
                 max: 25.0,
                 latency_ms: latency,
                 tokens,
-                detail: if ok { "valid structured tool call".into() } else { format!("got: {}", &content.chars().take(160).collect::<String>()) },
+                detail: if ok { "valid structured tool call".into() } else { format!("got: {}", content.chars().take(160).collect::<String>()) },
             }
         }
         Err(e) => TaskResult { task: "strict_json_tool_call", score: 0.0, max: 25.0, latency_ms: 0, tokens: 0, detail: e },
@@ -709,7 +714,7 @@ pub async fn redline_benchmark_start(
     let db_inner = db.inner().clone();
     std::thread::spawn(move || {
         let db = db_inner;
-        let tasks: [(&str, fn(&str) -> TaskResult); 4] = [
+        let tasks: [(&str, BenchTask); 4] = [
             ("strict_json_tool_call", run_task_strict_json),
             ("code_fix_and_verify", run_task_code_fix),
             ("instruction_adherence", run_task_instruction),

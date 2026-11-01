@@ -16,6 +16,10 @@
   --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
 }
 
+:root {
+  color-scheme: dark;
+}
+
 html,
 body,
 #root {
@@ -86,6 +90,21 @@ body,
 }
 .input:focus {
   border-color: var(--color-fuchsia);
+}
+select.input option {
+  background: var(--color-elev);
+  color: var(--color-text);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+}
+.btn:focus-visible,
+.input:focus-visible,
+[role="tab"]:focus-visible {
+  outline: 2px solid var(--color-fuchsia);
+  outline-offset: 1px;
 }
 .chip {
   border-radius: 999px;

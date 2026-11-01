@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 import { Trash2 } from "lucide-react";
 import { api, MemoryEntry } from "../../lib/api";
 import { useApp } from "../../store/useApp";
+import { confirmDialog } from "../../lib/dialog";
 
 export default function MemoryPane() {
   const project = useApp((s) => s.activeProject());
   const showToast = useApp((s) => s.showToast);
+  const updateProject = useApp((s) => s.updateProject);
   const [scope, setScope] = useState<"project" | "global">("project");
   const [entries, setEntries] = useState<MemoryEntry[]>([]);
   const [title, setTitle] = useState("");
@@ -13,8 +15,16 @@ export default function MemoryPane() {
   const [kind, setKind] = useState("note");
   const [editing, setEditing] = useState<string | null>(null);
   const [instructions, setInstructions] = useState(project?.instructions ?? "");
+  const [filter, setFilter] = useState("");
 
   useEffect(() => setInstructions(project?.instructions ?? ""), [project?.id]);
+
+  const resetForm = () => {
+    setTitle("");
+    setBody("");
+    setKind("note");
+    setEditing(null);
+  };
 
   const load = async () => {
     const key = scope === "global" ? "global" : (project?.id ?? "");
@@ -24,7 +34,6 @@ export default function MemoryPane() {
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope, project?.id]);
 
   const save = async () => {
@@ -32,9 +41,8 @@ export default function MemoryPane() {
     if (!key || !title.trim()) return;
     try {
       await api.memorySave(editing, key, kind, title.trim(), body);
-      setTitle("");
-      setBody("");
-      setEditing(null);
+      showToast(editing ? "Memory updated" : "Memory added");
+      resetForm();
       await load();
     } catch (e) {
       showToast(String(e));
@@ -56,9 +64,14 @@ export default function MemoryPane() {
           />
           <button
             className="btn btn-primary mt-1.5"
+            disabled={instructions === (project.instructions ?? "")}
             onClick={async () => {
-              await api.updateProject(project.id, { instructions }).catch((e) => showToast(String(e)));
-              showToast("Instructions saved");
+              try {
+                await updateProject(project.id, { instructions });
+                showToast("Instructions saved — used on the next prompt");
+              } catch (e) {
+                showToast(String(e));
+              }
             }}
           >
             Save instructions
@@ -71,7 +84,10 @@ export default function MemoryPane() {
           <button
             key={s}
             className={`btn ${scope === s ? "btn-primary" : "btn-ghost"}`}
-            onClick={() => setScope(s)}
+            onClick={() => {
+              setScope(s);
+              resetForm();
+            }}
           >
             {s} memory
           </button>
@@ -94,14 +110,24 @@ export default function MemoryPane() {
             <option value="bug">bug</option>
             <option value="task">task</option>
           </select>
-          <button className="btn btn-primary flex-1 justify-center" onClick={save}>
+          <button className="btn btn-primary flex-1 justify-center" onClick={save} disabled={!title.trim()}>
             {editing ? "Update memory" : "Add memory"}
           </button>
+          {editing && (
+            <button className="btn btn-ghost" onClick={resetForm}>
+              Cancel
+            </button>
+          )}
         </div>
       </div>
 
+      {entries.length > 4 && (
+        <input className="input mb-2 w-full" placeholder="Filter memory…" value={filter} onChange={(e) => setFilter(e.target.value)} />
+      )}
       <div className="space-y-1.5">
-        {entries.map((m) => (
+        {entries
+          .filter((m) => !filter.trim() || `${m.title} ${m.body} ${m.kind}`.toLowerCase().includes(filter.trim().toLowerCase()))
+          .map((m) => (
           <div key={m.id} className="group rounded-lg border border-[#22222c] bg-panel p-2">
             <div className="flex items-center gap-2">
               <span className="chip">{m.kind}</span>
@@ -120,7 +146,10 @@ export default function MemoryPane() {
               <button
                 className="hidden text-muted hover:text-err group-hover:block"
                 onClick={async () => {
-                  await api.memoryDelete(m.id);
+                  const ok = await confirmDialog(`Delete “${m.title}”?`, { confirmLabel: "Delete", danger: true });
+                  if (!ok) return;
+                  await api.memoryDelete(m.id).catch((e) => showToast(String(e)));
+                  if (editing === m.id) resetForm();
                   await load();
                 }}
               >

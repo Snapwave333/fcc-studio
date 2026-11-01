@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { CircleStop, ShieldAlert, ShieldCheck } from "lucide-react";
 import { useApp } from "../../store/useApp";
@@ -18,6 +18,23 @@ export default function TitleBar() {
   const emergencyStop = useApp((s) => s.emergencyStop);
   const running = useApp((s) => s.running);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const pickerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!pickerOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) setPickerOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPickerOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [pickerOpen]);
 
   useEffect(() => {
     refreshElevation();
@@ -30,6 +47,9 @@ export default function TitleBar() {
   return (
     <div
       data-tauri-drag-region
+      onDoubleClick={(e) => {
+        if ((e.target as HTMLElement).dataset.tauriDragRegion !== undefined) win.toggleMaximize();
+      }}
       className="relative flex h-9 shrink-0 items-center justify-between border-b border-[#22222c] bg-panel pl-3 select-none"
     >
       <div data-tauri-drag-region className="flex items-center gap-2">
@@ -39,11 +59,12 @@ export default function TitleBar() {
           className="h-5 w-5 object-contain"
           data-tauri-drag-region
         />
-        <span className="text-[12.5px] font-semibold tracking-wide">Serenity</span>
+        <span className="text-[12.5px] font-semibold tracking-wide" data-tauri-drag-region>Serenity</span>
         <span className="chip">free-claude-code</span>
 
         <button
           className={`ml-2 rounded-full px-3 py-0.5 text-[11px] font-bold tracking-widest ${mode.cls}`}
+          onMouseDown={(e) => e.stopPropagation()}
           onClick={() => setPickerOpen((v) => !v)}
           title="Autonomy mode — click to change"
         >
@@ -62,7 +83,7 @@ export default function TitleBar() {
       </div>
 
       {pickerOpen && (
-        <div className="absolute left-1/2 top-9 z-50 w-72 -translate-x-1/2 rounded-xl border border-[#2c2c38] bg-elev p-2 shadow-2xl">
+        <div ref={pickerRef} className="absolute left-1/2 top-9 z-50 w-72 -translate-x-1/2 rounded-xl border border-[#2c2c38] bg-elev p-2 shadow-2xl">
           <p className="px-1 pb-1.5 text-[10.5px] uppercase tracking-wider text-muted">autonomy mode</p>
           {(
             [

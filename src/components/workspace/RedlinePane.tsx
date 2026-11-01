@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Gauge, Play, RefreshCw, Trophy, Download, CircleStop } from "lucide-react";
-import { api, listenEvent, RedlineStatus, LeaderboardRow } from "../../lib/api";
+import { api, BenchProgress, listenEvent, RedlineStatus, LeaderboardRow } from "../../lib/api";
 import { useApp } from "../../store/useApp";
 
 interface BenchRow {
@@ -9,6 +9,7 @@ interface BenchRow {
   max: number;
   latency_ms: number;
   detail: string;
+  done: boolean;
 }
 
 function Row({ label, value, ok }: { label: string; value: string; ok?: boolean | null }) {
@@ -27,6 +28,12 @@ function Row({ label, value, ok }: { label: string; value: string; ok?: boolean 
 
 export default function RedlinePane() {
   const showToast = useApp((s) => s.showToast);
+  const visible = useApp((s) => s.rightTab === "redline");
+  const autonomy = useApp((s) => s.autonomy);
+  const activateRedline = useApp((s) => s.activateRedline);
+  const deactivateRedline = useApp((s) => s.deactivateRedline);
+  const [loadingStatus, setLoadingStatus] = useState(false);
+  const [busyModel, setBusyModel] = useState<string | null>(null);
   const [status, setStatus] = useState<RedlineStatus | null>(null);
   const [leaderboard, setLeaderboard] = useState<LeaderboardRow[]>([]);
   const [benchModel, setBenchModel] = useState<string | null>(null);
@@ -34,55 +41,60 @@ export default function RedlinePane() {
   const [running, setRunning] = useState(false);
 
   const refresh = useCallback(async () => {
-    const st = await api.redlineStatus().catch(() => null);
+    setLoadingStatus(true);
+    const [st, lb, br] = await Promise.all([
+      api.redlineStatus().catch(() => null),
+      api.redlineLeaderboard().catch(() => []),
+      api.redlineBenchRunning().catch(() => false),
+    ]);
     setStatus(st);
-    setLeaderboard(await api.redlineLeaderboard().catch(() => []));
-    setRunning(await api.redlineBenchRunning().catch(() => false));
+    setLeaderboard(lb);
+    setRunning(br);
+    setLoadingStatus(false);
   }, []);
 
   useEffect(() => {
+    if (!visible) return;
     refresh();
-    const t = setInterval(refresh, 8000);
+    const t = setInterval(refresh, 10000);
     return () => clearInterval(t);
-  }, [refresh]);
+  }, [refresh, visible]);
 
   useEffect(() => {
-    const un = listenEvent<{ model: string; task: string; score: number; max: number; latency_ms: number; detail: string }>(
-      "redline-bench",
-      (p) => {
-        setBenchRows((rows) => [
-          ...rows.filter((r) => r.task !== p.task),
-          { task: p.task, score: p.score, max: p.max, latency_ms: p.latency_ms, detail: p.detail },
-        ]);
-        if (p.task === "repo_bug_analysis") {
-          setRunning(false);
-          refresh();
-        }
-      }
-    );
+    const un = listenEvent<BenchProgress>("redline-bench", (p) => {
+      setBenchModel(p.model);
+      setBenchRows((rows) => {
+        const next = rows.filter((r) => r.task !== p.task);
+        next.push({ task: p.task, score: p.score, max: p.max, latency_ms: p.latency_ms, detail: p.detail, done: p.done });
+        return next;
+      });
+      if (p.finished) setRunning(false);
+    });
+    const unDone = listenEvent<{ model: string; score: number; max: number }>("redline-bench-done", (p) => {
+      setRunning(false);
+      showToast(`Benchmark finished · ${p.model} scored ${p.score}/${p.max}`);
+      refresh();
+    });
     return () => {
       un.then((f) => f());
+      unDone.then((f) => f());
     };
-  }, [refresh]);
+  }, [refresh, showToast]);
 
   const activate = async (model: string) => {
-    try {
-      await api.redlineActivate(model);
-      showToast(`Redline ACTIVE — routing through local ${model}. Cloud fallback disabled.`);
-      await refresh();
-    } catch (e) {
-      showToast(String(e));
-    }
+    setBusyModel(model);
+    const ok = await activateRedline(model);
+    setBusyModel(null);
+    if (ok) showToast(`Redline ACTIVE — routing through local ${model}. Cloud fallback disabled.`);
+    await refresh();
   };
 
   const deactivate = async () => {
-    try {
-      await api.redlineDeactivate();
-      showToast("Redline OFF — previous model configuration restored");
-      await refresh();
-    } catch (e) {
-      showToast(String(e));
-    }
+    setBusyModel("off");
+    await deactivateRedline();
+    setBusyModel(null);
+    showToast("Redline OFF — previous model configuration restored");
+    await refresh();
   };
 
   const runBenchmark = async (model: string) => {
@@ -103,8 +115,8 @@ export default function RedlinePane() {
     <div className="space-y-4 overflow-y-auto p-3 text-[12px]">
       <div className="flex items-center justify-between">
         <span className="text-[10.5px] font-semibold uppercase tracking-wider text-muted">redline · local engine</span>
-        <button className="btn btn-ghost px-1.5" onClick={refresh}>
-          <RefreshCw size={13} />
+        <button className="btn btn-ghost px-1.5" onClick={refresh} title="Refresh">
+          <RefreshCw size={13} className={loadingStatus ? "animate-spin" : ""} />
         </button>
       </div>
 
@@ -124,20 +136,24 @@ export default function RedlinePane() {
       {hw && (
         <>
           <div className="text-[10.5px] font-semibold uppercase tracking-wider text-muted">hardware</div>
-          <Row label="GPU" value={`${hw.gpu} · ${hw.vram_used_gb}/${hw.vram_total_gb} GB VRAM`} ok={hw.gpu !== "none"} />
+          <Row
+            label="GPU"
+            value={hw.vram_total_gb > 0 ? `${hw.gpu} · ${hw.vram_used_gb}/${hw.vram_total_gb} GB VRAM` : hw.gpu === "none" ? "no dedicated GPU detected" : hw.gpu}
+            ok={hw.gpu !== "none"}
+          />
           <Row label="System RAM" value={`${hw.ram_free_gb} / ${hw.ram_total_gb} GB free`} />
-          <Row label="Disk (C:)" value={`${hw.disk_free_gb} GB free`} ok={hw.disk_free_gb > 10} />
+          <Row label="Disk" value={`${hw.disk_free_gb} GB free`} ok={hw.disk_free_gb > 10} />
         </>
       )}
 
       {!status?.ollama_up && (
         <div className="space-y-2 rounded-xl border border-[#22222c] bg-panel p-3">
           <p className="text-[11.5px] leading-relaxed text-muted">
-            No local inference engine detected. Install Ollama to run Redline entirely offline. This
-            runs <code className="text-fuchsia2">winget install Ollama.Ollama</code> — it installs
-            software on your machine, so only click if you want that.
+            No local inference engine detected. Install Ollama to run Redline entirely offline. On
+            Windows this runs <code className="text-fuchsia2">winget install Ollama.Ollama</code>, on macOS{" "}
+            <code className="text-fuchsia2">brew install ollama</code>; otherwise the official download page opens.
           </p>
-          <button className="btn btn-primary" onClick={() => api.redlineInstallOllama().then(() => showToast("Ollama installer launched")).catch((e) => showToast(String(e)))}>
+          <button className="btn btn-primary" onClick={() => api.redlineInstallOllama().then((msg) => showToast(msg)).catch((e) => showToast(String(e)))}>
             <Download size={13} /> Install Ollama
           </button>
         </div>
@@ -151,12 +167,12 @@ export default function RedlinePane() {
               <div className="flex items-center gap-2">
                 <span className="min-w-0 flex-1 truncate font-medium text-text2">{m.name}</span>
                 {status.redline_model === m.name && <span className="chip bg-fuchsia text-white">ACTIVE</span>}
-                <button className="btn btn-ghost px-1.5" title="Benchmark this model" onClick={() => runBenchmark(m.name)}>
+                <button className="btn btn-ghost px-1.5" title="Benchmark this model" onClick={() => runBenchmark(m.name)} disabled={running}>
                   <Play size={12} />
                 </button>
-                {!status.redline_active && (
-                  <button className="btn btn-primary px-2 py-0.5" onClick={() => activate(m.name)}>
-                    Use
+                {status.redline_model !== m.name && (
+                  <button className="btn btn-primary px-2 py-0.5" onClick={() => activate(m.name)} disabled={busyModel !== null}>
+                    {busyModel === m.name ? "…" : status.redline_active ? "Switch" : "Use"}
                   </button>
                 )}
               </div>
@@ -183,11 +199,13 @@ export default function RedlinePane() {
             </span>
           </div>
           {benchRows.map((r) => (
-            <div key={r.task} className="flex items-baseline gap-2 py-0.5 text-[11px]">
-              <span className={r.score > 0 ? "text-ok" : "text-err"}>{r.score > 0 ? "✓" : "✕"}</span>
+            <div key={r.task} className="flex items-baseline gap-2 py-0.5 text-[11px]" title={r.detail}>
+              <span className={!r.done ? "animate-pulse text-fuchsia2" : r.score > 0 ? "text-ok" : "text-err"}>
+                {!r.done ? "◌" : r.score > 0 ? "✓" : "✕"}
+              </span>
               <span className="w-40 shrink-0 text-text2">{r.task}</span>
-              <span className="text-muted">{r.score}/{r.max}</span>
-              <span className="min-w-0 flex-1 truncate text-right text-muted">{r.latency_ms} ms</span>
+              <span className="text-muted">{r.done ? `${r.score}/${r.max}` : "running"}</span>
+              <span className="min-w-0 flex-1 truncate text-right text-muted">{r.done ? `${r.latency_ms} ms` : ""}</span>
             </div>
           ))}
         </div>
@@ -212,8 +230,13 @@ export default function RedlinePane() {
         )}
       </div>
 
+      {status?.redline_active && autonomy !== "redline" && (
+        <p className="px-1 text-[11px] text-muted">
+          The proxy is routed locally but the autonomy mode is not Redline — prompts still use the {autonomy} permission profile.
+        </p>
+      )}
       {status?.redline_active && (
-        <button className="btn btn-danger w-full justify-center" onClick={deactivate}>
+        <button className="btn btn-danger w-full justify-center" onClick={deactivate} disabled={busyModel !== null}>
           <CircleStop size={13} /> Turn Redline OFF (restore cloud config)
         </button>
       )}

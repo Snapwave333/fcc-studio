@@ -1,106 +1,219 @@
 import { create } from "zustand";
-import { api, Project, SelectedElement } from "../lib/api";
-import { listenEvent } from "../lib/api";
-import { processAgentEvent, AgentEventState, emptyAgentEventState } from "../lib/agent-events";
-export interface ToolActivity {
-  id: string;
-  name: string;
-  input: any;
-  result?: string;
-  isError?: boolean;
-}
+import { api, listenEvent, Project, SelectedElement, StoredMessage } from "../lib/api";
+import {
+  AgentEventState,
+  ChatMessage,
+  ToolActivity,
+  emptyAgentEventState,
+  processAgentEvent,
+} from "../lib/agent-events";
+import { confirmDialog } from "../lib/dialog";
 
-export interface ChatMessage {
+export type { ChatMessage, ToolActivity } from "../lib/agent-events";
+
+export type Autonomy = "normal" | "redline" | "yolo";
+
+export type RightTab = "preview" | "terminal" | "git" | "editor" | "skills" | "memory" | "redline" | "env";
+
+export interface ThreadSummary {
   id: string;
-  role: "user" | "assistant" | "system";
-  text: string;
-  tools: ToolActivity[];
-  streaming: boolean;
-  ts: number;
-  meta?: string;
+  title: string;
+  updated: number;
+  count: number;
 }
 
 interface AppState {
   projects: Project[];
   activeProjectId: string | null;
   sessionId: string;
+  threadId: string;
+  threads: ThreadSummary[];
   messages: ChatMessage[];
   running: boolean;
   runId: string | null;
   activityLog: string[];
   inspectorOpen: boolean;
-  showRawActivity: boolean;
   pendingElement: SelectedElement | null;
   activeFile: string | null;
   fileTreeVersion: number;
+  changedPaths: string[];
+  changeVersion: number;
   toast: string | null;
-  autonomy: "normal" | "redline" | "yolo";
+  autonomy: Autonomy;
   isAdmin: boolean;
   pendingSkill: string | null;
+  rightTab: RightTab;
+  ev: AgentEventState;
 
-  setAutonomy: (level: "normal" | "redline" | "yolo") => Promise<void>;
+  setAutonomy: (level: Autonomy) => Promise<boolean>;
+  activateRedline: (model: string) => Promise<boolean>;
+  deactivateRedline: () => Promise<void>;
   setPendingSkill: (name: string | null) => void;
   refreshElevation: () => Promise<void>;
   emergencyStop: () => Promise<void>;
-  __ev?: AgentEventState;
-
   loadProjects: () => Promise<void>;
+  updateProject: (id: string, patch: Partial<Pick<Project, "name" | "instructions" | "preview_url" | "layout">>) => Promise<void>;
+  removeProject: (id: string) => Promise<void>;
   setActiveProject: (id: string | null) => Promise<void>;
   activeProject: () => Project | null;
   sendMessage: (text: string) => Promise<void>;
   stopRun: () => Promise<void>;
   newSession: () => void;
+  openThread: (threadId: string) => Promise<void>;
   setPendingElement: (el: SelectedElement | null) => void;
+  setInspectorOpen: (open: boolean) => void;
   openFile: (path: string | null) => void;
+  setRightTab: (tab: RightTab) => void;
   bumpTree: () => void;
   showToast: (msg: string) => void;
-  restoreMessages: (projectId: string) => Promise<void>;
 }
 
-let unlisten: (() => void) | null = null;
+const LEGACY_THREAD = "legacy";
 
-async function bindAgentEvents(set: any, get: any) {
-  if (unlisten) {
-    unlisten();
-    unlisten = null;
+function parseMeta(raw: string): Record<string, any> {
+  try {
+    const v = JSON.parse(raw || "{}");
+    return v && typeof v === "object" ? v : {};
+  } catch {
+    return {};
   }
-  unlisten = await listenEvent<{ runId: string; event: any }>("agent-event", ({ runId, event }) => {
-    set((s: AppState) => {
-      const st: AgentEventState = (s as any).__ev ?? emptyAgentEventState();
-      const next = processAgentEvent(st, event, s.messages);
-      const patch: any = { messages: next.messages, __ev: next.evState };
-      if (next.finished) patch.running = false;
-      return patch;
-    });
-    const evState = (get() as any).__ev as AgentEventState | undefined;
-    if (evState?.sessionId) {
-      set({ sessionId: evState.sessionId });
+}
+
+export function storedToChat(m: StoredMessage): ChatMessage {
+  let text = m.content;
+  let tools: ToolActivity[] = [];
+  let meta: string | undefined;
+  let error = false;
+  if (m.role === "assistant") {
+    try {
+      const parsed = JSON.parse(m.content);
+      text = parsed.text ?? "";
+      tools = Array.isArray(parsed.tools) ? parsed.tools : [];
+      meta = parsed.meta || undefined;
+      error = !!parsed.error;
+    } catch {
+      text = m.content;
     }
-    if (event?.type === "result") {
-      const projectId = get().activeProjectId;
-      const sid = (get() as any).__ev?.sessionId ?? "";
-      const msgs = get().messages;
-      const lastAssistant = [...msgs].reverse().find((m) => m.role === "assistant");
-      if (projectId && lastAssistant) {
-        api
-          .addMessage(projectId, sid, "assistant", JSON.stringify({ text: lastAssistant.text, tools: lastAssistant.tools }), "{}")
-          .catch(() => {});
-      }
+  }
+  const ts = new Date(m.created_at).getTime();
+  return {
+    id: m.id,
+    role: (m.role as ChatMessage["role"]) ?? "assistant",
+    text,
+    tools,
+    streaming: false,
+    ts: Number.isFinite(ts) ? ts : Date.now(),
+    meta,
+    error,
+  };
+}
+
+export function threadOf(m: StoredMessage): string {
+  return parseMeta(m.meta).thread || LEGACY_THREAD;
+}
+
+export function summarizeThreads(stored: StoredMessage[]): ThreadSummary[] {
+  const map = new Map<string, ThreadSummary>();
+  for (const m of stored) {
+    const id = threadOf(m);
+    const ts = new Date(m.created_at).getTime() || 0;
+    const cur = map.get(id) ?? { id, title: "", updated: 0, count: 0 };
+    cur.count++;
+    cur.updated = Math.max(cur.updated, ts);
+    if (!cur.title && m.role === "user") cur.title = m.content.replace(/\s+/g, " ").slice(0, 80);
+    map.set(id, cur);
+  }
+  return [...map.values()]
+    .map((t) => ({ ...t, title: t.title || (t.id === LEGACY_THREAD ? "Earlier conversation" : "Conversation") }))
+    .sort((a, b) => b.updated - a.updated);
+}
+
+let eventsBound = false;
+const deadRuns = new Set<string>();
+let toastTimer: ReturnType<typeof setTimeout> | null = null;
+
+function acceptsRun(s: AppState, runId: string): boolean {
+  if (!s.running || deadRuns.has(runId)) return false;
+  return s.runId === null || s.runId === runId;
+}
+
+function persistAssistant(get: () => AppState, msg: ChatMessage | undefined) {
+  const projectId = get().activeProjectId;
+  if (!projectId || !msg || msg.role !== "assistant") return;
+  if (!msg.text && msg.tools.length === 0) return;
+  api
+    .addMessage(
+      projectId,
+      get().sessionId,
+      "assistant",
+      JSON.stringify({ text: msg.text, tools: msg.tools, meta: msg.meta ?? "", error: !!msg.error }),
+      JSON.stringify({ thread: get().threadId })
+    )
+    .catch(() => {});
+}
+
+async function bindEvents(set: (p: Partial<AppState> | ((s: AppState) => Partial<AppState>)) => void, get: () => AppState) {
+  if (eventsBound) return;
+  eventsBound = true;
+
+  await listenEvent<{ runId: string; event: any }>("agent-event", ({ runId, event }) => {
+    const s = get();
+    if (!acceptsRun(s, runId)) return;
+    const next = processAgentEvent(s.ev, event, s.messages);
+    const patch: Partial<AppState> = { messages: next.messages, ev: next.evState };
+    if (s.runId === null) patch.runId = runId;
+    if (next.evState.sessionId && next.evState.sessionId !== s.sessionId) patch.sessionId = next.evState.sessionId;
+    if (next.finished) {
+      patch.running = false;
+      patch.runId = null;
+    }
+    set(patch);
+    if (next.finished) {
+      persistAssistant(get, next.messages[next.messages.length - 1]);
+      get().bumpTree();
     }
   });
 
-  await listenEvent<{ runId: string; text: string }>("agent-stderr", ({ text }) => {
-    set((s: AppState) => ({ activityLog: [...s.activityLog.slice(-300), `[stderr] ${text}`] }));
+  await listenEvent<{ runId: string; text: string }>("agent-stderr", ({ runId, text }) => {
+    const s = get();
+    if (s.runId !== null && s.runId !== runId) return;
+    set({ activityLog: [...s.activityLog.slice(-300), `[stderr] ${text}`] });
   });
 
-  await listenEvent<{ runId: string; code: number }>("agent-exit", ({ code }) => {
-    set((s: AppState) => {
-      const msgs = s.messages.map((m, i) =>
-        i === s.messages.length - 1 && m.streaming ? { ...m, streaming: false } : m
-      );
-      const log = [...s.activityLog, `[exit] agent process exited with code ${code}`];
-      return { running: false, runId: null, messages: msgs, activityLog: log.slice(-300) };
-    });
+  await listenEvent<{ runId: string; code: number }>("agent-exit", ({ runId, code }) => {
+    const s = get();
+    const log = [...s.activityLog, `[exit] agent process exited with code ${code}`].slice(-300);
+    if (!acceptsRun(s, runId)) {
+      set({ activityLog: log });
+      return;
+    }
+    const lastIdx = s.messages.length - 1;
+    const last = s.messages[lastIdx];
+    let messages = s.messages;
+    if (last && last.streaming) {
+      const stderrTail = s.activityLog
+        .filter((l) => l.startsWith("[stderr]"))
+        .slice(-4)
+        .map((l) => l.slice(9))
+        .join("\n");
+      const text =
+        last.text ||
+        (code === 0 ? "" : `⚠ The agent exited with code ${code} before replying.${stderrTail ? `\n\n\`\`\`\n${stderrTail}\n\`\`\`` : ""}`);
+      const finalMsg: ChatMessage = { ...last, text, streaming: false, thinking: false, error: code !== 0 && !last.text };
+      messages = [...s.messages.slice(0, lastIdx), finalMsg];
+      persistAssistant(get, finalMsg);
+    }
+    set({ running: false, runId: null, messages, activityLog: log, ev: { ...s.ev, committed: "", partial: "" } });
+  });
+
+  await listenEvent<{ root: string; paths: string[] }>("fs-changed", ({ root, paths }) => {
+    const p = get().activeProject();
+    if (!p || p.root !== root) return;
+    set((st) => ({
+      fileTreeVersion: st.fileTreeVersion + 1,
+      changedPaths: paths ?? [],
+      changeVersion: st.changeVersion + 1,
+    }));
   });
 }
 
@@ -108,120 +221,182 @@ export const useApp = create<AppState>((set, get) => ({
   projects: [],
   activeProjectId: null,
   sessionId: "",
+  threadId: crypto.randomUUID(),
+  threads: [],
   messages: [],
   running: false,
   runId: null,
   activityLog: [],
   inspectorOpen: true,
-  showRawActivity: false,
   pendingElement: null,
   activeFile: null,
   fileTreeVersion: 0,
+  changedPaths: [],
+  changeVersion: 0,
   toast: null,
-  autonomy: "yolo",
+  autonomy: "normal",
   isAdmin: false,
   pendingSkill: null,
-  __ev: undefined as any,
+  rightTab: "preview",
+  ev: emptyAgentEventState(),
 
   setAutonomy: async (level) => {
-    if (level === "yolo" && level !== get().autonomy) {
-      if (!confirm("YOLO Mode: the agent gains maximum autonomy — no permission prompts, skip-permissions enabled, and commands run without individual approval. Enable?")) return;
-    }
     const prev = get().autonomy;
+    if (level === prev) return true;
+    if (level === "yolo") {
+      const ok = await confirmDialog("Enable YOLO mode?", {
+        message:
+          "The agent gains maximum autonomy: no permission prompts, skip-permissions enabled, and commands run without individual approval.",
+        confirmLabel: "Enable YOLO",
+        danger: true,
+      });
+      if (!ok) return false;
+    }
     try {
-      if (level === "redline" && prev !== "redline") {
+      if (level === "redline") {
         const model = await api.kvGet("redline.model");
         if (!model) {
-          showToast2("Pick a local model in the Redline tab first");
-          return;
+          get().showToast("Pick a local model in the Redline tab first");
+          get().setRightTab("redline");
+          return false;
         }
         await api.redlineActivate(model);
-      }
-      if (prev === "redline" && level !== "redline") {
-        await api.redlineDeactivate().catch(() => {});
+      } else if (prev === "redline") {
+        await api.redlineDeactivate();
       }
     } catch (e) {
-      showToast2(String(e));
-      return;
+      get().showToast(String(e));
+      return false;
     }
     set({ autonomy: level });
-    await api.kvSet("autonomy.level", level);
-    await api
-      .auditWrite(`mode:${level}`, `mode changed ${prev} -> ${level}`)
-      .catch(() => {});
+    await api.kvSet("autonomy.level", level).catch(() => {});
+    api.auditWrite(`mode:${level}`, `mode changed ${prev} -> ${level}`).catch(() => {});
+    return true;
+  },
+
+  activateRedline: async (model) => {
+    await api.kvSet("redline.model", model).catch(() => {});
+    if (get().autonomy === "redline") {
+      try {
+        await api.redlineActivate(model);
+        return true;
+      } catch (e) {
+        get().showToast(String(e));
+        return false;
+      }
+    }
+    return get().setAutonomy("redline");
+  },
+
+  deactivateRedline: async () => {
+    if (get().autonomy === "redline") {
+      await get().setAutonomy("normal");
+    } else {
+      await api.redlineDeactivate().catch((e) => get().showToast(String(e)));
+    }
   },
 
   refreshElevation: async () => {
     const st = await api.elevationStatus().catch(() => null);
     set({ isAdmin: st?.is_admin ?? false });
-    const level = (await api.kvGet("autonomy.level").catch(() => null)) as any;
-    if (level === "normal" || level === "redline" || level === "yolo") set({ autonomy: level });
+    const level = await api.kvGet("autonomy.level").catch(() => null);
+    if (level === "normal" || level === "redline" || level === "yolo") {
+      if (level !== get().autonomy) set({ autonomy: level });
+    }
   },
 
   emergencyStop: async () => {
     const runId = get().runId;
+    if (runId) deadRuns.add(runId);
     if (runId) await api.cancelAgentRun(runId).catch(() => {});
     await api.ptyKillAll().catch(() => {});
     await api.auditWrite("emergency_stop", "emergency stop: agent run and all terminal sessions terminated").catch(() => {});
-    set({ running: false, runId: null, activityLog: [...get().activityLog, "[STOP] emergency stop — all execution terminated"] });
-    showToast2("Emergency stop — everything terminated");
+    const msgs = get().messages.map((m) => (m.streaming ? { ...m, streaming: false, thinking: false } : m));
+    set({
+      running: false,
+      runId: null,
+      messages: msgs,
+      activityLog: [...get().activityLog, "[STOP] emergency stop — all execution terminated"],
+    });
+    get().showToast("Emergency stop — everything terminated");
   },
 
   loadProjects: async () => {
+    await bindEvents(set, get);
     const projects = await api.listProjects();
     set({ projects });
-    if (!get().activeProjectId && projects.length > 0) {
-      await get().setActiveProject(projects[0].id);
-    }
+    const current = get().activeProjectId;
+    if (current && projects.some((p) => p.id === current)) return;
+    const lastId = await api.kvGet("project.last").catch(() => null);
+    const pick = projects.find((p) => p.id === lastId) ?? projects[0];
+    await get().setActiveProject(pick ? pick.id : null);
+  },
+
+  updateProject: async (id, patch) => {
+    await api.updateProject(id, patch);
+    set({ projects: get().projects.map((p) => (p.id === id ? { ...p, ...patch } : p)) });
+  },
+
+  removeProject: async (id) => {
+    await api.deleteProject(id);
+    const projects = get().projects.filter((p) => p.id !== id);
+    set({ projects });
+    if (get().activeProjectId === id) await get().setActiveProject(projects[0]?.id ?? null);
   },
 
   setActiveProject: async (id) => {
-    set({ activeProjectId: id, messages: [], sessionId: "", pendingElement: null, __ev: emptyAgentEventState() });
-    if (id) {
-      await bindAgentEvents(set, get);
-      await get().restoreMessages(id);
-      const p = get().projects.find((x) => x.id === id);
-      if (p) {
-        api.startFsWatch(p.root).catch(() => {});
-      }
+    if (get().running && id !== get().activeProjectId) {
+      const ok = await confirmDialog("Stop the running agent?", {
+        message: "Switching projects stops the agent run in progress.",
+        confirmLabel: "Stop and switch",
+        danger: true,
+      });
+      if (!ok) return;
+      await get().stopRun();
     }
+    set({
+      activeProjectId: id,
+      messages: [],
+      threads: [],
+      sessionId: "",
+      threadId: crypto.randomUUID(),
+      pendingElement: null,
+      activeFile: null,
+      ev: emptyAgentEventState(),
+    });
+    if (!id) return;
+    api.kvSet("project.last", id).catch(() => {});
+    const p = get().projects.find((x) => x.id === id);
+    if (p) api.startFsWatch(p.root).catch(() => {});
+    const stored = await api.listMessages(id).catch(() => [] as StoredMessage[]);
+    if (get().activeProjectId !== id) return;
+    const threads = summarizeThreads(stored);
+    set({ threads });
+    if (threads.length > 0) await get().openThread(threads[0].id);
   },
 
   activeProject: () => get().projects.find((p) => p.id === get().activeProjectId) ?? null,
 
-  restoreMessages: async (projectId) => {
-    const stored = await api.listMessages(projectId).catch(() => []);
-    const msgs: ChatMessage[] = stored.map((m) => {
-      let text = "";
-      let tools: ToolActivity[] = [];
-      try {
-        if (m.role === "assistant") {
-          const parsed = JSON.parse(m.content);
-          text = parsed.text ?? "";
-          tools = parsed.tools ?? [];
-        } else {
-          text = m.content;
-        }
-      } catch {
-        text = m.content;
-      }
-      return {
-        id: m.id,
-        role: m.role as ChatMessage["role"],
-        text,
-        tools,
-        streaming: false,
-        ts: new Date(m.created_at).getTime(),
-      };
+  openThread: async (threadId) => {
+    const projectId = get().activeProjectId;
+    if (!projectId || get().running) return;
+    const stored = await api.listMessages(projectId).catch(() => [] as StoredMessage[]);
+    const inThread = stored.filter((m) => threadOf(m) === threadId);
+    const lastWithSession = [...inThread].reverse().find((m) => m.session_id);
+    set({
+      threadId,
+      threads: summarizeThreads(stored),
+      messages: inThread.map(storedToChat),
+      sessionId: lastWithSession?.session_id ?? "",
+      ev: { ...emptyAgentEventState(), sessionId: lastWithSession?.session_id ?? "" },
     });
-    set({ messages: msgs });
   },
 
   sendMessage: async (text) => {
     const project = get().activeProject();
     if (!project || !text.trim() || get().running) return;
     const skill = get().pendingSkill;
-    const fullText = skill ? `Use the "${skill}" skill for this task.\n\n${text}` : text;
+    const element = get().pendingElement;
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
@@ -229,6 +404,7 @@ export const useApp = create<AppState>((set, get) => ({
       tools: [],
       streaming: false,
       ts: Date.now(),
+      meta: [skill ? `skill: ${skill}` : "", element ? `element: <${element.tag}>` : ""].filter(Boolean).join(" · ") || undefined,
     };
     const assistantMsg: ChatMessage = {
       id: crypto.randomUUID(),
@@ -241,18 +417,20 @@ export const useApp = create<AppState>((set, get) => ({
     set({
       messages: [...get().messages, userMsg, assistantMsg],
       running: true,
+      runId: null,
       pendingElement: null,
+      pendingSkill: null,
       activityLog: [],
+      ev: { ...get().ev, committed: "", partial: "", sessionId: get().sessionId },
     });
-    api
-      .addMessage(project.id, get().sessionId, "user", text, "{}")      .catch(() => {});
+    const threadId = get().threadId;
+    api.addMessage(project.id, get().sessionId, "user", text, JSON.stringify({ thread: threadId })).catch(() => {});
 
-    const memory = await api.memoryList(project.id).catch(() => []);
-    const globalMemory = await api.memoryList("global").catch(() => []);
-    const memoryBlock = [...globalMemory, ...memory]
-      .map((m) => `- [${m.kind}] ${m.title}: ${m.body}`)
-      .join("\n");
-    const element = get().pendingElement;
+    const [memory, globalMemory] = await Promise.all([
+      api.memoryList(project.id).catch(() => []),
+      api.memoryList("global").catch(() => []),
+    ]);
+    const memoryBlock = [...globalMemory, ...memory].map((m) => `- [${m.kind}] ${m.title}: ${m.body}`).join("\n");
     let contextBlock = "";
     if (element) {
       contextBlock =
@@ -260,52 +438,67 @@ export const useApp = create<AppState>((set, get) => ({
         `tag: ${element.tag}\nselector: ${element.selector}\nclasses: ${element.classes.join(", ")}\n` +
         `text: ${element.text}\nhtml: ${element.html}`;
     }
-    const systemPrompt =
-      (project.instructions ? `Project instructions:\n${project.instructions}\n` : "") +
-      (memoryBlock ? `Relevant memory:\n${memoryBlock}` : "");
-    const fullPrompt = fullText + contextBlock;
+    const fresh = get().activeProject() ?? project;
+    const systemPrompt = [
+      fresh.instructions ? `Project instructions:\n${fresh.instructions}` : "",
+      memoryBlock ? `Relevant memory:\n${memoryBlock}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    const fullPrompt = (skill ? `Use the "${skill}" skill for this task.\n\n` : "") + text + contextBlock;
 
     const autonomy = get().autonomy;
     api
-      .auditWrite(`run:start`, `mode=${autonomy} session=${get().sessionId || "new"} prompt="${text.slice(0, 120)}"`)
+      .auditWrite("run:start", `mode=${autonomy} session=${get().sessionId || "new"} prompt="${text.slice(0, 120)}"`)
       .catch(() => {});
     try {
-      const res = await api.startAgentRun(
-        project.root,
-        fullPrompt,
-        get().sessionId || undefined,
-        systemPrompt || undefined,
-        autonomy
-      );
-      set({ runId: res.run_id, pendingSkill: null });
+      const res = await api.startAgentRun(project.root, fullPrompt, get().sessionId || undefined, systemPrompt || undefined, autonomy);
+      if (get().running && get().runId === null) set({ runId: res.run_id });
+      if (!get().threads.some((t) => t.id === threadId)) {
+        set({
+          threads: [{ id: threadId, title: text.replace(/\s+/g, " ").slice(0, 80), updated: Date.now(), count: 1 }, ...get().threads],
+        });
+      }
     } catch (e: any) {
-      set((s: AppState) => ({
+      set((s) => ({
         running: false,
-        messages: s.messages.map((m) => (m.id === assistantMsg.id ? { ...m, streaming: false, text: `⚠ ${String(e)}` } : m)),
+        runId: null,
+        messages: s.messages.map((m) =>
+          m.id === assistantMsg.id ? { ...m, streaming: false, error: true, text: `⚠ ${String(e)}` } : m
+        ),
       }));
     }
   },
 
   stopRun: async () => {
     const runId = get().runId;
-    if (runId) {
-      await api.cancelAgentRun(runId).catch(() => {});
+    if (runId) deadRuns.add(runId);
+    if (runId) await api.cancelAgentRun(runId).catch(() => {});
+    const lastIdx = get().messages.length - 1;
+    const last = get().messages[lastIdx];
+    let messages = get().messages;
+    if (last?.streaming) {
+      const stopped: ChatMessage = { ...last, streaming: false, thinking: false, meta: "stopped by user", text: last.text };
+      messages = [...messages.slice(0, lastIdx), stopped];
+      persistAssistant(get, stopped);
     }
-    set({ running: false, runId: null });
+    set({ running: false, runId: null, messages, ev: { ...get().ev, committed: "", partial: "" } });
   },
 
-  newSession: () => set({ sessionId: "", messages: [], __ev: emptyAgentEventState() }),
+  newSession: () => {
+    if (get().running) return;
+    set({ sessionId: "", messages: [], threadId: crypto.randomUUID(), ev: emptyAgentEventState() });
+  },
 
   setPendingElement: (el) => set({ pendingElement: el }),
-  openFile: (path) => set({ activeFile: path }),
-  bumpTree: () => set((s: AppState) => ({ fileTreeVersion: s.fileTreeVersion + 1 })),
+  setInspectorOpen: (open) => set({ inspectorOpen: open }),
+  openFile: (path) => set(path ? { activeFile: path, rightTab: "editor" } : { activeFile: null }),
+  setRightTab: (tab) => set({ rightTab: tab }),
+  bumpTree: () => set((s) => ({ fileTreeVersion: s.fileTreeVersion + 1 })),
   setPendingSkill: (name) => set({ pendingSkill: name }),
   showToast: (msg) => {
+    if (toastTimer) clearTimeout(toastTimer);
     set({ toast: msg });
-    setTimeout(() => set({ toast: null }), 2600);
+    toastTimer = setTimeout(() => set({ toast: null }), Math.min(6000, 2200 + msg.length * 25));
   },
 }));
-
-function showToast2(msg: string) {
-  useApp.getState().showToast(msg);
-}
