@@ -169,6 +169,17 @@ async function main() {
     await waitFor("empty state", async () => (await bodyText()).includes("No project open"));
   });
 
+  await step("content security policy blocks injected inline scripts", async () => {
+    const ran = await execAsync(`
+      const done = arguments[0];
+      const s = document.createElement('script');
+      s.textContent = 'window.__cspProbe = 1';
+      document.head.appendChild(s);
+      setTimeout(() => done(window.__cspProbe === 1), 100);
+    `);
+    if (ran) throw new Error("inline script executed; CSP is not enforced");
+  });
+
   await step("project created through backend appears after reload", async () => {
     await invoke("create_project", { name: "demo-app", root: project, instructions: "" });
     await exec("location.reload();");
