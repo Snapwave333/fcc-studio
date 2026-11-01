@@ -26,7 +26,8 @@ It combines an ultra-fast native desktop shell with autonomous agent workflows, 
 ## Key Features
 
 - **Autonomous Agent Control & Elevation:** Run AI coding agents with configurable autonomy modes (`Normal`, `Redline`, `YOLO`) with emergency stop triggers and elevation safeguards. Prompts are streamed to the CLI over stdin, so no shell ever interprets them.
-- **Conversations that survive restarts:** Every exchange is stored per project and grouped into conversations; reopen any of them from the history menu and the agent resumes the same Claude session.
+- **Conversations that survive restarts:** Every exchange is stored per project and grouped into conversations; reopen any of them from the history menu and the agent resumes the same Claude session. Replies show text and tool calls in the order they happened, with run stats (turns, time, tokens, cost), one-click retry for crashed or stopped runs, and edit-and-resend for your prompts.
+- **Context at your fingertips:** `@` mentions with fuzzy file autocomplete, `Ctrl/⌘+P` quick open, git status colors in the file tree, and a heads-up (window attention + title badge) when a run finishes in the background.
 - **Embedded Web & Dev Server Preview:** Serve the project folder with the built-in static server (auto-reloads when files change, click-to-select any element and hand it to the agent) or detect running dev servers (Vite, Next.js, Astro, Storybook, FastAPI, Flask…) with their page titles.
 - **PTY Terminal Multiplexer:** Native pseudo-terminals backed by `portable-pty` and `@xterm/xterm`, using your platform shell (PowerShell, zsh, bash), resizing with the panel and staying alive when you switch tabs.
 - **Code Editor:** CodeMirror with syntax highlighting for TS/JS/CSS/HTML/JSON/Markdown/Python/Rust, `Ctrl/⌘+S` to save, and live reload when the agent edits the open file (with conflict protection for unsaved edits).
