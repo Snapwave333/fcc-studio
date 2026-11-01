@@ -268,7 +268,13 @@ async function main() {
     if (text.match(/Received \d+ chars in default mode\.\s*Received/)) throw new Error("streamed text duplicated");
     await find("//strong[normalize-space(.)='Add a dark mode toggle']");
     await find("//span[normalize-space(.)='Bash']");
+    const order = await exec(`
+      const all = document.body.innerText;
+      return [all.indexOf("Received"), all.indexOf("echo listing"), all.indexOf("Echo: ")];
+    `);
+    if (!(order[0] >= 0 && order[0] < order[1] && order[1] < order[2])) throw new Error(`parts out of order: ${order}`);
     await waitFor("run stats", async () => (await bodyText()).includes("2 turns"));
+    if (process.env.E2E_SHOTS) writeFileSync(join(process.env.E2E_SHOTS, "agent-run.png"), Buffer.from(await wd("GET", s("/screenshot")), "base64"));
     const projects = await invoke("list_projects");
     const msgs = await invoke("list_messages", { projectId: projects[0].id });
     if (msgs.length < 2) throw new Error("conversation not persisted");

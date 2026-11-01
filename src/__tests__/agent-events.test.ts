@@ -53,6 +53,29 @@ describe("processAgentEvent", () => {
     expect(last.tools[0].result).toBe("ok");
   });
 
+  it("keeps text and tool calls in the order the agent produced them", () => {
+    const { last } = run([
+      delta("Checking config"),
+      assistant([{ type: "text", text: "Checking config" }, { type: "tool_use", id: "t1", name: "Read", input: {} }]),
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] } },
+      assistant([{ type: "text", text: "Fixing it" }, { type: "tool_use", id: "t2", name: "Edit", input: {} }]),
+      delta("All done"),
+      { type: "result", subtype: "success" },
+    ]);
+    expect(last.parts).toEqual([
+      { kind: "text", text: "Checking config" },
+      { kind: "tool", id: "t1" },
+      { kind: "text", text: "Fixing it" },
+      { kind: "tool", id: "t2" },
+      { kind: "text", text: "All done" },
+    ]);
+  });
+
+  it("shows partial text as a live trailing part while streaming", () => {
+    const { last } = run([assistant([{ type: "tool_use", id: "t1", name: "Bash", input: {} }]), delta("work")]);
+    expect(last.parts).toEqual([{ kind: "tool", id: "t1" }, { kind: "text", text: "work" }]);
+  });
+
   it("does not mutate previous tool objects", () => {
     let st = emptyAgentEventState();
     let msgs = live();

@@ -6,6 +6,8 @@ export interface ToolActivity {
   isError?: boolean;
 }
 
+export type MessagePart = { kind: "text"; text: string } | { kind: "tool"; id: string };
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
@@ -16,6 +18,7 @@ export interface ChatMessage {
   meta?: string;
   thinking?: boolean;
   error?: boolean;
+  parts?: MessagePart[];
 }
 
 export interface AgentEventState {
@@ -23,6 +26,7 @@ export interface AgentEventState {
   model: string;
   committed: string;
   partial: string;
+  segments: MessagePart[];
 }
 
 export const emptyAgentEventState = (): AgentEventState => ({
@@ -30,7 +34,12 @@ export const emptyAgentEventState = (): AgentEventState => ({
   model: "",
   committed: "",
   partial: "",
+  segments: [],
 });
+
+export function livePart(segments: MessagePart[], partial: string): MessagePart[] {
+  return partial ? [...segments, { kind: "text", text: partial }] : segments;
+}
 
 export interface ProcessResult {
   messages: ChatMessage[];
@@ -72,7 +81,7 @@ export function formatResultMeta(event: any, model: string): string {
 export function processAgentEvent(evState: AgentEventState, event: any, messages: ChatMessage[]): ProcessResult {
   const msgs = messages.slice();
   let finished = false;
-  const ev: AgentEventState = { ...evState };
+  const ev: AgentEventState = { ...evState, segments: evState.segments ?? [] };
   const lastIdx = msgs.length - 1;
   const last = lastIdx >= 0 ? msgs[lastIdx] : undefined;
   const live = last && last.role === "assistant" && last.streaming ? last : undefined;
@@ -80,7 +89,7 @@ export function processAgentEvent(evState: AgentEventState, event: any, messages
 
   const render = (patch: Partial<ChatMessage>) => {
     if (!live) return;
-    msgs[lastIdx] = { ...live, text: joinText(ev.committed, ev.partial), ...patch };
+    msgs[lastIdx] = { ...live, text: joinText(ev.committed, ev.partial), parts: livePart(ev.segments, ev.partial), ...patch };
   };
 
   if (t === "system" && event.subtype === "init") {
@@ -108,18 +117,20 @@ export function processAgentEvent(evState: AgentEventState, event: any, messages
       .join("");
     ev.committed = joinText(ev.committed, text);
     ev.partial = "";
-    if (live) {
-      const tools = live.tools.slice();
-      for (const b of blocks) {
-        if (b?.type === "tool_use") {
-          const id = b.id ?? crypto.randomUUID();
-          if (!tools.some((x) => x.id === id)) {
-            tools.push({ id, name: b.name ?? "tool", input: b.input ?? {} });
-          }
+    const segments = ev.segments.slice();
+    if (text.trim()) segments.push({ kind: "text", text });
+    const tools = live ? live.tools.slice() : [];
+    for (const b of blocks) {
+      if (b?.type === "tool_use") {
+        const id = b.id ?? crypto.randomUUID();
+        if (!tools.some((x) => x.id === id)) {
+          tools.push({ id, name: b.name ?? "tool", input: b.input ?? {} });
+          segments.push({ kind: "tool", id });
         }
       }
-      render({ tools, thinking: false });
     }
+    ev.segments = segments;
+    if (live) render({ tools, thinking: false });
   } else if (t === "user") {
     const blocks = event.message?.content;
     if (Array.isArray(blocks) && live) {
@@ -142,9 +153,12 @@ export function processAgentEvent(evState: AgentEventState, event: any, messages
       const isError = !!event.is_error || (typeof event.subtype === "string" && event.subtype.startsWith("error"));
       let text = joinText(ev.committed, ev.partial) || fallback;
       if (isError && !text) text = `⚠ Run ended: ${event.subtype ?? "error"}`;
+      let parts = livePart(ev.segments, ev.partial);
+      if (!parts.some((p) => p.kind === "text") && text) parts = [...parts, { kind: "text", text }];
       msgs[lastIdx] = {
         ...live,
         text,
+        parts,
         streaming: false,
         thinking: false,
         error: isError,
@@ -153,6 +167,7 @@ export function processAgentEvent(evState: AgentEventState, event: any, messages
     }
     ev.committed = "";
     ev.partial = "";
+    ev.segments = [];
   }
 
   return { messages: msgs, finished, evState: ev };

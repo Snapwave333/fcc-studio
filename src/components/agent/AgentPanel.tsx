@@ -68,18 +68,27 @@ const MessageView = memo(function MessageView({ msg }: { msg: ChatMessage }) {
       </div>
     );
   }
+  const toolById = new Map(msg.tools.map((t) => [t.id, t]));
+  const parts = msg.parts?.length
+    ? msg.parts
+    : [...msg.tools.map((t) => ({ kind: "tool" as const, id: t.id })), ...(msg.text ? [{ kind: "text" as const, text: msg.text }] : [])];
+  const errorText = msg.error && !msg.parts?.some((p) => p.kind === "text") ? msg.text : "";
   return (
     <div className="group space-y-1.5">
-      {msg.tools.length > 0 && (
-        <div className="space-y-1">
-          {msg.tools.map((t) => (
-            <ToolBlock key={t.id} tool={t} live={msg.streaming} />
-          ))}
-        </div>
-      )}
-      {msg.text && (
-        <div className={msg.error ? "rounded-lg border border-err/30 bg-err/5 px-3 py-2" : ""}>
-          <Markdown text={msg.text} />
+      {parts.map((p, i) => {
+        if (p.kind === "tool") {
+          const tool = toolById.get(p.id);
+          return tool ? <ToolBlock key={`t-${p.id}`} tool={tool} live={msg.streaming} /> : null;
+        }
+        return (
+          <div key={`x-${i}`} className={msg.error ? "rounded-lg border border-err/30 bg-err/5 px-3 py-2" : ""}>
+            <Markdown text={p.text} />
+          </div>
+        );
+      })}
+      {errorText && !parts.some((p) => p.kind === "text") && (
+        <div className="rounded-lg border border-err/30 bg-err/5 px-3 py-2">
+          <Markdown text={errorText} />
         </div>
       )}
       {msg.streaming && (msg.thinking || (!msg.text && msg.tools.length === 0)) && (

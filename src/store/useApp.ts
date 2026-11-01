@@ -84,6 +84,7 @@ export function storedToChat(m: StoredMessage): ChatMessage {
   let tools: ToolActivity[] = [];
   let meta: string | undefined;
   let error = false;
+  let parts: ChatMessage["parts"];
   if (m.role === "assistant") {
     try {
       const parsed = JSON.parse(m.content);
@@ -91,6 +92,7 @@ export function storedToChat(m: StoredMessage): ChatMessage {
       tools = Array.isArray(parsed.tools) ? parsed.tools : [];
       meta = parsed.meta || undefined;
       error = !!parsed.error;
+      parts = Array.isArray(parsed.parts) && parsed.parts.length ? parsed.parts : undefined;
     } catch {
       text = m.content;
     }
@@ -105,6 +107,7 @@ export function storedToChat(m: StoredMessage): ChatMessage {
     ts: Number.isFinite(ts) ? ts : Date.now(),
     meta,
     error,
+    parts,
   };
 }
 
@@ -146,7 +149,7 @@ function persistAssistant(get: () => AppState, msg: ChatMessage | undefined) {
       projectId,
       get().sessionId,
       "assistant",
-      JSON.stringify({ text: msg.text, tools: msg.tools, meta: msg.meta ?? "", error: !!msg.error }),
+      JSON.stringify({ text: msg.text, tools: msg.tools, parts: msg.parts ?? [], meta: msg.meta ?? "", error: !!msg.error }),
       JSON.stringify({ thread: get().threadId })
     )
     .catch(() => {});
@@ -203,7 +206,7 @@ async function bindEvents(set: (p: Partial<AppState> | ((s: AppState) => Partial
       messages = [...s.messages.slice(0, lastIdx), finalMsg];
       persistAssistant(get, finalMsg);
     }
-    set({ running: false, runId: null, messages, activityLog: log, ev: { ...s.ev, committed: "", partial: "" } });
+    set({ running: false, runId: null, messages, activityLog: log, ev: { ...s.ev, committed: "", partial: "", segments: [] } });
   });
 
   await listenEvent<{ root: string; paths: string[] }>("fs-changed", ({ root, paths }) => {
@@ -421,7 +424,7 @@ export const useApp = create<AppState>((set, get) => ({
       pendingElement: null,
       pendingSkill: null,
       activityLog: [],
-      ev: { ...get().ev, committed: "", partial: "", sessionId: get().sessionId },
+      ev: { ...get().ev, committed: "", partial: "", segments: [], sessionId: get().sessionId },
     });
     const threadId = get().threadId;
     api.addMessage(project.id, get().sessionId, "user", text, JSON.stringify({ thread: threadId })).catch(() => {});
@@ -482,7 +485,7 @@ export const useApp = create<AppState>((set, get) => ({
       messages = [...messages.slice(0, lastIdx), stopped];
       persistAssistant(get, stopped);
     }
-    set({ running: false, runId: null, messages, ev: { ...get().ev, committed: "", partial: "" } });
+    set({ running: false, runId: null, messages, ev: { ...get().ev, committed: "", partial: "", segments: [] } });
   },
 
   newSession: () => {
