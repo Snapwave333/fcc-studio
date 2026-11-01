@@ -46,6 +46,8 @@ impl Db {
         conn.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            PRAGMA busy_timeout = 5000;
             PRAGMA foreign_keys = ON;
             CREATE TABLE IF NOT EXISTS projects(
                 id TEXT PRIMARY KEY,
@@ -144,15 +146,16 @@ pub fn create_project(
     let now = Db::now();
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT INTO projects(id, name, root, instructions, preview_url, layout, created_at, updated_at) VALUES(?1,?2,?3,?4,'','','','') ",
-        params![id, name, root, instructions],
+        "INSERT INTO projects(id, name, root, instructions, preview_url, layout, created_at, updated_at) VALUES(?1,?2,?3,?4,'','',?5,?5)",
+        params![id, name, root, instructions, now],
     )
-    .map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE projects SET created_at=?2, updated_at=?2 WHERE id=?1",
-        params![id, now],
-    )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| {
+        if e.to_string().contains("UNIQUE") {
+            format!("a project already uses the folder {root}")
+        } else {
+            e.to_string()
+        }
+    })?;
     Ok(Project {
         id,
         name,
@@ -206,6 +209,16 @@ pub fn delete_project(db: tauri::State<Db>, id: String) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM messages WHERE project_id=?1", params![id])
         .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM memory WHERE scope=?1", params![id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn clear_messages(db: tauri::State<Db>, project_id: String) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM messages WHERE project_id=?1", params![project_id])
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -232,7 +245,7 @@ pub fn add_message(
 pub fn list_messages(db: tauri::State<Db>, project_id: String) -> Result<Vec<StoredMessage>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare("SELECT id, project_id, session_id, role, content, meta, created_at FROM messages WHERE project_id=?1 ORDER BY created_at ASC")
+        .prepare("SELECT id, project_id, session_id, role, content, meta, created_at FROM (SELECT rowid AS rid, * FROM messages WHERE project_id=?1 ORDER BY created_at DESC, rid DESC LIMIT 500) ORDER BY created_at ASC, rid ASC")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params![project_id], |row| {
@@ -352,4 +365,29 @@ pub fn kv_set(db: tauri::State<Db>, key: String, value: String) -> Result<(), St
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schema_initialises_and_is_idempotent() {
+        let path = std::env::temp_dir().join(format!("serenity-db-{}.db", uuid::Uuid::new_v4()));
+        let db = Db::open(path.clone()).unwrap();
+        drop(db);
+        let db = Db::open(path.clone()).unwrap();
+        let conn = db.0.lock().unwrap();
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','messages','memory','kv','benchmarks')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 5);
+        drop(conn);
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
 }

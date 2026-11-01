@@ -3,6 +3,7 @@ mod db;
 mod elevation;
 mod fs_cmds;
 mod git;
+mod platform;
 mod preview;
 mod pty;
 mod redline;
@@ -11,10 +12,39 @@ mod skills;
 
 use agent::AgentState;
 use db::Db;
+use fs_cmds::FsWatchState;
+use preview::PreviewState;
 use pty::PtyState;
 use redline::RedlineState;
-use preview::PreviewState;
 use tauri::Manager;
+
+fn shutdown(app: &tauri::AppHandle) {
+    if let Some(agents) = app.try_state::<AgentState>() {
+        agents.kill_all();
+    }
+    if let Some(ptys) = app.try_state::<PtyState>() {
+        ptys.kill_all();
+    }
+    if let Some(preview) = app.try_state::<PreviewState>() {
+        preview.stop();
+    }
+    if let Some(watch) = app.try_state::<FsWatchState>() {
+        if let Ok(mut w) = watch.watcher.lock() {
+            *w = None;
+        }
+    }
+}
+
+#[tauri::command]
+fn app_info(app: tauri::AppHandle) -> serde_json::Value {
+    serde_json::json!({
+        "version": app.package_info().version.to_string(),
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "default_shell": platform::default_shell(),
+        "data_dir": app.path().app_data_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+    })
+}
 
 pub fn run() {
     tauri::Builder::default()
@@ -22,19 +52,23 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let database = Db::open(data_dir.join("fcc-studio.db"))?;
+            app.manage(RedlineState::restore(&database));
             app.manage(database);
             app.manage(AgentState::default());
             app.manage(PtyState::default());
             app.manage(PreviewState::default());
-            app.manage(RedlineState::default());
+            app.manage(FsWatchState::default());
             Ok(())
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
-                let _ = window;
+                if window.label() == "main" {
+                    shutdown(window.app_handle());
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
+            app_info,
             db::list_projects,
             db::create_project,
             db::update_project,
@@ -46,6 +80,7 @@ pub fn run() {
             db::memory_delete,
             db::kv_get,
             db::kv_set,
+            db::clear_messages,
             fs_cmds::list_dir,
             fs_cmds::read_file,
             fs_cmds::write_file,
@@ -98,6 +133,11 @@ pub fn run() {
             elevation::audit_write,
             elevation::audit_read,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running FCC Studio");
+        .build(tauri::generate_context!())
+        .expect("error while building Serenity")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
+                shutdown(app);
+            }
+        });
 }
