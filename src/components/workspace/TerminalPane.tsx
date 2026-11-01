@@ -50,6 +50,15 @@ export default function TerminalPane() {
   const spawn = async (program: string) => {
     if (spawning.current || !containerRef.current) return;
     spawning.current = true;
+    try {
+      await spawnInner(program);
+    } finally {
+      spawning.current = false;
+    }
+  };
+
+  const spawnInner = async (program: string) => {
+    if (!containerRef.current) return;
     const st = useApp.getState();
     const cwd = st.activeProject()?.root;
     const host = document.createElement("div");
@@ -122,8 +131,6 @@ export default function TerminalPane() {
       term.dispose();
       host.remove();
       showToast(String(e));
-    } finally {
-      spawning.current = false;
     }
   };
 

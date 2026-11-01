@@ -60,7 +60,7 @@ interface AppState {
   sendMessage: (text: string) => Promise<void>;
   stopRun: () => Promise<void>;
   newSession: () => void;
-  openThread: (threadId: string) => Promise<void>;
+  openThread: (threadId: string, preloaded?: StoredMessage[]) => Promise<void>;
   setPendingElement: (el: SelectedElement | null) => void;
   setInspectorOpen: (open: boolean) => void;
   openFile: (path: string | null) => void;
@@ -394,15 +394,16 @@ export const useApp = create<AppState>((set, get) => ({
     if (get().activeProjectId !== id) return;
     const threads = summarizeThreads(stored);
     set({ threads });
-    if (threads.length > 0) await get().openThread(threads[0].id);
+    if (threads.length > 0) await get().openThread(threads[0].id, stored);
   },
 
   activeProject: () => get().projects.find((p) => p.id === get().activeProjectId) ?? null,
 
-  openThread: async (threadId) => {
+  openThread: async (threadId, preloaded) => {
     const projectId = get().activeProjectId;
     if (!projectId || get().running) return;
-    const stored = await api.listMessages(projectId).catch(() => [] as StoredMessage[]);
+    const stored = preloaded ?? (await api.listMessages(projectId).catch(() => [] as StoredMessage[]));
+    if (get().activeProjectId !== projectId) return;
     const inThread = stored.filter((m) => threadOf(m) === threadId);
     const lastWithSession = [...inThread].reverse().find((m) => m.session_id);
     set({

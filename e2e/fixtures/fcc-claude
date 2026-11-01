@@ -7,12 +7,19 @@ if (args.includes("--version")) {
 let input = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (d) => (input += d));
-process.stdin.on("end", () => {
+process.stdin.on("end", async () => {
   const resumeIdx = args.indexOf("--resume");
   const session = resumeIdx >= 0 ? args[resumeIdx + 1] : "e2e-session-1";
   const emit = (o) => process.stdout.write(JSON.stringify(o) + "\n");
   const mode = args.includes("--dangerously-skip-permissions") ? "yolo" : args[args.indexOf("--permission-mode") + 1];
   const prompt = input.trim();
+  const fs = await import("node:fs");
+  const marker = ".fixture-flaky";
+  if (prompt.includes("FLAKY") && !fs.existsSync(marker)) {
+    fs.writeFileSync(marker, "1");
+    process.stderr.write("fixture: simulated crash before replying\n");
+    process.exit(3);
+  }
   emit({ type: "system", subtype: "init", session_id: session, model: "e2e-model" });
   emit({ type: "stream_event", event: { type: "message_start" } });
   const intro = `Received ${prompt.length} chars in ${mode} mode.`;

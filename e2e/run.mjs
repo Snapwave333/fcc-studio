@@ -318,6 +318,14 @@ async function main() {
     await waitFor("agent saw mention", async () => (await bodyText()).includes("Echo: review @README.md"), 20000);
   });
 
+  await step("crashed runs surface stderr and can be retried", async () => {
+    await type("//textarea[contains(@placeholder,'Describe what to build')]", "FLAKY task\uE007");
+    await waitFor("crash shown", async () => (await bodyText()).includes("exited with code 3"), 20000);
+    if (!(await bodyText()).includes("simulated crash")) throw new Error("stderr tail not shown");
+    await click("//button[contains(.,'retry')]");
+    await waitFor("retry succeeded", async () => (await bodyText()).includes("Echo: FLAKY task"), 20000);
+  });
+
   await step("in-app dialogs replace native prompts (new file)", async () => {
     await click("//button[@title='New file']");
     await type("//div[@role='dialog']//input", "notes.txt\uE007");

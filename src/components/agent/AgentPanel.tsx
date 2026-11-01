@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowDown,
@@ -6,6 +6,8 @@ import {
   CircleStop,
   Copy,
   History,
+  Pencil,
+  RotateCcw,
   PanelLeft,
   PanelRight,
   Plus,
@@ -65,15 +67,30 @@ function ToolBlock({ tool, live }: { tool: ToolActivity; live: boolean }) {
   );
 }
 
-const MessageView = memo(function MessageView({ msg }: { msg: ChatMessage }) {
+const MessageView = memo(function MessageView({
+  msg,
+  onEdit,
+  onRetry,
+}: {
+  msg: ChatMessage;
+  onEdit?: (text: string) => void;
+  onRetry?: () => void;
+}) {
   const [copied, setCopied] = useState(false);
   if (msg.role === "user") {
     return (
-      <div className="flex flex-col items-end gap-0.5">
+      <div className="group flex flex-col items-end gap-0.5">
         <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-select px-3.5 py-2 text-[13px] leading-relaxed">
           {msg.text}
         </div>
-        {msg.meta && <span className="pr-1 text-[10.5px] text-muted">{msg.meta}</span>}
+        <div className="flex items-center gap-2 pr-1 text-[10.5px] text-muted">
+          {msg.meta && <span>{msg.meta}</span>}
+          {onEdit && (
+            <button className="invisible flex items-center gap-1 hover:text-text group-hover:visible" onClick={() => onEdit(msg.text)} title="Edit and resend">
+              <Pencil size={10} /> edit
+            </button>
+          )}
+        </div>
       </div>
     );
   }
@@ -109,6 +126,11 @@ const MessageView = memo(function MessageView({ msg }: { msg: ChatMessage }) {
       {!msg.streaming && (msg.meta || msg.text) && (
         <div className="flex items-center gap-2 text-[10.5px] text-muted">
           {msg.meta && <span>{msg.meta}</span>}
+          {onRetry && (
+            <button className="flex items-center gap-1 text-fuchsia2 hover:text-text" onClick={onRetry} title="Send the previous prompt again">
+              <RotateCcw size={10} /> retry
+            </button>
+          )}
           {msg.text && (
             <button
               className="invisible flex items-center gap-1 hover:text-text group-hover:visible"
@@ -259,6 +281,24 @@ export default function AgentPanel({
     sendMessage(text);
   };
 
+  const editMessage = useCallback((text: string) => {
+    setDraft(text);
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      el?.focus();
+      el?.setSelectionRange(text.length, text.length);
+    });
+  }, []);
+
+  const lastUser = [...messages].reverse().find((m) => m.role === "user");
+  const lastMsg = messages[messages.length - 1];
+  const canRetry = !running && !!lastUser && lastMsg?.role === "assistant" && (lastMsg.error || lastMsg.meta === "stopped by user");
+  const retry = useCallback(() => {
+    const st = useApp.getState();
+    const u = [...st.messages].reverse().find((m) => m.role === "user");
+    if (u && !st.running) st.sendMessage(u.text);
+  }, []);
+
   const liveTools: ToolActivity[] = running ? messages[messages.length - 1]?.tools ?? [] : [];
 
   return (
@@ -317,7 +357,12 @@ export default function AgentPanel({
           </div>
         )}
         {messages.map((m) => (
-          <MessageView key={m.id} msg={m} />
+          <MessageView
+            key={m.id}
+            msg={m}
+            onEdit={m.role === "user" && !running ? editMessage : undefined}
+            onRetry={canRetry && m.id === lastMsg?.id ? retry : undefined}
+          />
         ))}
       </div>
 
