@@ -175,6 +175,27 @@ async function main() {
     await waitFor("project in selector", async () => exec("return [...document.querySelectorAll('select option')].some(o => o.textContent === 'demo-app');"));
   });
 
+  await step("every workspace tab is reachable at the default panel width", async () => {
+    const clipped = await exec(`
+      const strip = document.querySelector('[role=tablist]');
+      const box = strip.getBoundingClientRect();
+      return [...strip.querySelectorAll('[role=tab]')].filter(t => t.getBoundingClientRect().right > box.right + 1).map(t => t.textContent);
+    `);
+    if (clipped.length) throw new Error(`tabs cut off: ${clipped.join(", ")}`);
+  });
+
+  await step("tab strip adapts to wide fonts", async () => {
+    await exec("document.documentElement.style.setProperty('font-family', 'DejaVu Sans, Verdana, sans-serif'); document.querySelector('[role=tablist]').style.fontSize = '15px';");
+    await new Promise((r) => setTimeout(r, 300));
+    const clipped = await exec(`
+      const strip = document.querySelector('[role=tablist]');
+      const box = strip.getBoundingClientRect();
+      return [...strip.querySelectorAll('[role=tab]')].filter(t => t.getBoundingClientRect().right > box.right + 1).length;
+    `);
+    await exec("document.documentElement.style.removeProperty('font-family'); document.querySelector('[role=tablist]').style.fontSize = '';");
+    if (clipped) throw new Error(`${clipped} tabs cut off with wide fonts`);
+  });
+
   await step("file tree lists project files", async () => {
     await find("//span[normalize-space(.)='index.html']");
     await find("//span[normalize-space(.)='src']");

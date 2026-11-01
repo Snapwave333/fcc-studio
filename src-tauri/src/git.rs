@@ -331,6 +331,7 @@ mod tests {
         git_init(root.clone()).unwrap();
         git(&root, &["config", "user.email", "t@example.com"]).unwrap();
         git(&root, &["config", "user.name", "t"]).unwrap();
+        git(&root, &["config", "core.autocrlf", "false"]).unwrap();
         std::fs::write(dir.join("a.txt"), "hello\n").unwrap();
         let st = parse_status(&git(&root, &["status", "--porcelain=v1", "-b", "-uall"]).unwrap());
         assert!(st.entries.iter().any(|e| e.path == "a.txt" && e.untracked));
